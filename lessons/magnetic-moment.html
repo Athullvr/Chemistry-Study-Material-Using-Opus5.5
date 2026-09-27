@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magnetic Moment · Sketch to Chemistry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/studio.css">
+</head>
+<body>
+<script src="../shared/catalog.js"></script>
+<script src="../shared/studio.js"></script>
+<script>
+(() => {
+const { clamp, clamp01, S, Lr, lerp, easeOut, hash, SUP } = Studio.U;
+const { INK, GRAY, ORANGE, SANS, MONO } = Studio.C;
+const { sk, hatch, hand, arrowSk, softEllipse, sphere, ringFx, tag, ellipsePts, sketchAxes } = Studio.draw;
+let ctx, TT, P;                        // set at the start of every draw()
+
+// ------------------------------------------------------------ chemistry
+// 3d ions of the first transition series. col = typical colour of the aqueous ion (muted).
+const IONS = [
+  { name: 'Sc³⁺', sym: 'Sc', Z: 21, q: 3, col: '#e9e6df' }, { name: 'Ti³⁺', sym: 'Ti', Z: 22, q: 3, col: '#b48bb8' },
+  { name: 'V³⁺', sym: 'V', Z: 23, q: 3, col: '#7fa37a' }, { name: 'Cr³⁺', sym: 'Cr', Z: 24, q: 3, col: '#7d9483' },
+  { name: 'Mn²⁺', sym: 'Mn', Z: 25, q: 2, col: '#ecd9da' }, { name: 'Fe³⁺', sym: 'Fe', Z: 26, q: 3, col: '#c9a45a' },
+  { name: 'Fe²⁺', sym: 'Fe', Z: 26, q: 2, col: '#bcd2a9' }, { name: 'Co²⁺', sym: 'Co', Z: 27, q: 2, col: '#d79aa8' },
+  { name: 'Ni²⁺', sym: 'Ni', Z: 28, q: 2, col: '#86b287' }, { name: 'Cu²⁺', sym: 'Cu', Z: 29, q: 2, col: '#7ea3cc' },
+  { name: 'Cu⁺', sym: 'Cu', Z: 29, q: 1, col: '#e9e6df' }, { name: 'Zn²⁺', sym: 'Zn', Z: 30, q: 2, col: '#e9e6df' },
+];
+const CO = 7, ZN = 11, MN = 4;
+// ground-state atom beyond [Ar]; Cr and Cu are the half-filled / filled exceptions
+function atomCfg(Z) {
+  if (Z === 24) return { s: 1, d: 5 };
+  if (Z === 29) return { s: 1, d: 10 };
+  const v = Z - 18; return v <= 2 ? { s: v, d: 0 } : { s: 2, d: v - 2 };
+}
+// forming the ion: 4s electrons leave first, then 3d
+function ionCfg(Z, q) {
+  const a = atomCfg(Z); let s = a.s, d = a.d, r = q;
+  const rs = Math.min(s, r); s -= rs; r -= rs; d = Math.max(0, d - r);
+  return { s, d };
+}
+const unpairedD = d => d <= 5 ? d : 10 - d;
+const muOf = nU => Math.sqrt(nU * (nU + 2));
+const sup = n => String(n).split('').map(c => SUP[c]).join('');
+const cfgStr = c => '[Ar]' + (c.d ? ' 3d' + sup(c.d) : '') + (c.s ? ' 4s' + sup(c.s) : '');
+const ionInfo = i => { const I = IONS[i], c = ionCfg(I.Z, I.q), nU = unpairedD(c.d) + (c.s === 1 ? 1 : 0); return { ...I, cfg: c, atom: atomCfg(I.Z), n: nU, mu: muOf(nU) }; };
+const boxStr = d => Array.from({ length: 5 }, (_, j) => (j < d ? '↑' : '') + (j < d - 5 ? '↓' : '') || '_').join('  ');
+
+// order in which the atom's valence electrons are drawn (aufbau: 4s, then 3d by Hund's rule)
+function seqFor(c) {
+  const out = [];
+  if (c.s >= 1) out.push({ box: -1, up: true });
+  if (c.s >= 2) out.push({ box: -1, up: false });
+  for (let j = 0; j < Math.min(c.d, 5); j++) out.push({ box: j, up: true });
+  for (let j = 0; j < c.d - 5; j++) out.push({ box: j, up: false });
+  return out;
+}
+// which of those leave when the ion forms: 4s first (last-in first), then 3d
+function removalOrder(seq, q) {
+  const idx = seq.map((_, i) => i);
+  return [...idx.filter(i => seq[i].box < 0).reverse(), ...idx.filter(i => seq[i].box >= 0).reverse()].slice(0, q);
+}
+function electrons(ionIdx, fillK, removeK) {
+  const I = IONS[ionIdx], seq = seqFor(atomCfg(I.Z)), rem = removalOrder(seq, I.q);
+  return seq.map((e, i) => {
+    const j = rem.indexOf(i);
+    return { ...e, p: clamp01(fillK - i), r: j < 0 ? 0 : clamp01(removeK - j) };
+  }).filter(e => e.p > 0);
+}
+function countUnpaired(els) {
+  const cnt = {};
+  for (const e of els) if (e.p >= 1 && e.r < 1) cnt[e.box] = (cnt[e.box] || 0) + 1;
+  let nU = 0, pairs = 0;
+  for (const k in cnt) { if (cnt[k] === 1) nU++; else pairs++; }
+  return { nU, pairs };
+}
+
+// ------------------------------------------------------------ geometry
+const PIV = { x: 360, y: 245 }, ARM = 150;
+const BOX = { y: 240, h: 90, w: 70, s: 560, d0: 670 };
+const bx = b => b < 0 ? BOX.s + BOX.w / 2 : BOX.d0 + b * BOX.w + BOX.w / 2;
+const BY = BOX.y + BOX.h / 2;
+function beamEnds(th) {
+  const c = Math.cos(th), s = Math.sin(th);
+  return { L: [PIV.x - ARM * c, PIV.y - ARM * s], R: [PIV.x + ARM * c, PIV.y + ARM * s] };
+}
+let tiltS = 0;
+const vA = { orbitals: 1, graph: 0, working: 0 };
+
+// ------------------------------------------------------------ small drawing helpers
+function harpoon(x, y, up, size, alpha, m, seed) {
+  if (alpha <= 0.01) return;
+  const b = ctx.globalAlpha, h = size / 2;
+  // full arrow (↑ or ↓) so the spin direction reads at a glance
+  const d = up ? -1 : 1, tip = [x, y + d * h], tail = [x, y - d * h], bw = size * 0.22, bl = size * 0.28;
+  const head = [[x - bw, tip[1] - d * bl], tip, [x + bw, tip[1] - d * bl]];
+  if (m < 1) { ctx.globalAlpha = b * alpha * (1 - m * 0.8); sk([tail, tip], seed, 1, { w: 2.2, amp: 0.7 }); sk(head, seed + 2, 1, { w: 2.2, amp: 0.5 }); }
+  if (m > 0) {
+    ctx.globalAlpha = b * alpha * m;
+    ctx.strokeStyle = up ? '#2d2925' : '#3f4a63'; ctx.lineWidth = 3.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(...tail); ctx.lineTo(...tip); ctx.moveTo(...head[0]); ctx.lineTo(...tip); ctx.lineTo(...head[2]); ctx.stroke();
+  }
+  ctx.globalAlpha = b;
+}
+// vertical bar magnet: N end (muted red) points where the spin arrow points
+function barMagnet(x, y, up, len, w, alpha, m, seed) {
+  if (alpha <= 0.01) return;
+  const b = ctx.globalAlpha, top = y - len / 2;
+  const nTop = up;
+  if (m < 1) {
+    ctx.globalAlpha = b * alpha * (1 - m * 0.8);
+    sk([[x - w / 2, top], [x + w / 2, top], [x + w / 2, top + len], [x - w / 2, top + len], [x - w / 2, top]], seed, 1, { w: 1.6, amp: 0.8 });
+    sk([[x - w / 2, y], [x + w / 2, y]], seed + 3, 1, { w: 1.2, single: true });
+    hand('N', x, (nTop ? top + len * 0.25 : top + len * 0.75) + 7, { size: Math.max(14, w * 0.8), align: 'center', color: ORANGE });
+  }
+  if (m > 0) {
+    ctx.globalAlpha = b * alpha * m;
+    softEllipse(x + 6, top + len + 4, w * 0.9, 5, 0.22);
+    const half = (y0, col) => {
+      const g = ctx.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+      g.addColorStop(0, Studio.U.mix(col, '#000000', 0.18)); g.addColorStop(0.4, Studio.U.mix(col, '#ffffff', 0.25)); g.addColorStop(1, Studio.U.mix(col, '#000000', 0.25));
+      ctx.fillStyle = g; ctx.fillRect(x - w / 2, y0, w, len / 2);
+    };
+    half(top, nTop ? '#b5584a' : '#9aa3ae'); half(y, nTop ? '#9aa3ae' : '#b5584a');
+    ctx.fillStyle = '#fff'; ctx.font = `700 ${Math.round(w * 0.55)}px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('N', x, nTop ? top + len * 0.25 : top + len * 0.75);
+    ctx.fillStyle = '#2d2925'; ctx.fillText('S', x, nTop ? top + len * 0.75 : top + len * 0.25);
+  }
+  ctx.globalAlpha = b;
+}
+function note(t, t0, t1, tOut, fn) {
+  if (t < t0 || t > tOut + 0.6) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * (1 - S(t, tOut, tOut + 0.6));
+  fn(Lr(t, t0, t1)); ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ Gouy balance
+function drawBalanceSketch(th, ion) {
+  const { L, R } = beamEnds(th);
+  sk([[110, 800], [610, 800], [610, 852], [110, 852], [110, 800]], 11, P(0.4, 1.0), { w: 2 });
+  sk([[140, 812], [330, 812], [330, 842], [140, 842], [140, 812]], 12, P(0.8, 1.1), { w: 1.4 });
+  sk([[350, 800], [350, 255], [370, 255], [370, 800]], 13, P(0.9, 1.3), { w: 1.8 });
+  sk([L, R], 14, P(1.2, 1.6), { w: 2.4 });
+  sk(ellipsePts(PIV.x, PIV.y, 8, 8, 12), 15, P(1.2, 1.6), { w: 1.4 });
+  const pp = P(1.5, 2.0), panY = L[1] + 220;
+  sk([L, [L[0] - 38, panY], [L[0] + 38, panY], L], 16, pp, { w: 1.3 });
+  sk(ellipsePts(L[0], panY, 42, 8, 18), 17, pp, { w: 1.6 });
+  sk([[L[0] - 22, panY - 6], [L[0] - 22, panY - 34], [L[0] + 22, panY - 34], [L[0] + 22, panY - 6]], 18, pp, { w: 1.5 });
+  const tp = P(2.0, 2.4), tTop = R[1] + 135;
+  sk([R, [R[0], tTop]], 19, tp, { w: 1.2 });
+  sk([[R[0] - 12, tTop], [R[0] - 12, tTop + 250], [R[0] - 6, tTop + 260], [R[0] + 6, tTop + 260], [R[0] + 12, tTop + 250], [R[0] + 12, tTop]], 20, tp, { w: 1.7 });
+  hatch(() => { ctx.beginPath(); ctx.rect(R[0] - 12, tTop + 60, 24, 196); }, R[0] - 12, tTop + 60, R[0] + 12, tTop + 256, 7, 21, tp, 0.35);
+  const mp = P(2.2, 3.4);
+  sk([[450, 560], [492, 560], [492, 700], [528, 700], [528, 560], [570, 560], [570, 745], [450, 745], [450, 560]], 22, mp, { w: 2 });
+  sk([[470, 745], [470, 800]], 23, mp, { w: 1.6 }); sk([[550, 745], [550, 800]], 24, mp, { w: 1.6 });
+  for (let i = 0; i < 6; i++) { sk([[444, 596 + i * 14], [498, 596 + i * 14]], 30 + i, mp, { w: 1, single: true, color: '#9a6a44' }); sk([[522, 596 + i * 14], [576, 596 + i * 14]], 40 + i, mp, { w: 1, single: true, color: '#9a6a44' }); }
+}
+function drawBalanceModel(th, ion, magT) {
+  const { L, R } = beamEnds(th), I = IONS[ion];
+  softEllipse(380, 858, 280, 16, 0.3);
+  // base
+  const bg = ctx.createLinearGradient(0, 800, 0, 852); bg.addColorStop(0, '#e9e3d6'); bg.addColorStop(1, '#cfc6b4');
+  ctx.fillStyle = bg; ctx.beginPath(); ctx.roundRect(110, 800, 500, 52, 10); ctx.fill();
+  ctx.fillStyle = '#3b3631'; ctx.beginPath(); ctx.roundRect(138, 810, 196, 34, 6); ctx.fill();
+  // pillar
+  const pg = ctx.createLinearGradient(350, 0, 370, 0); pg.addColorStop(0, '#8d8577'); pg.addColorStop(0.45, '#d8d1c3'); pg.addColorStop(1, '#7d7568');
+  ctx.fillStyle = pg; ctx.fillRect(350, 255, 20, 546);
+  // magnet: yoke + poles + coils
+  const mg = (x0, x1) => { const g = ctx.createLinearGradient(x0, 0, x1, 0); g.addColorStop(0, '#5b5f66'); g.addColorStop(0.45, '#9aa0a8'); g.addColorStop(1, '#4e525a'); return g; };
+  softEllipse(510, 802, 90, 10, 0.25);
+  ctx.fillStyle = mg(450, 570); ctx.fillRect(450, 700, 120, 45);
+  ctx.fillStyle = mg(450, 492); ctx.fillRect(450, 560, 42, 145);
+  ctx.fillStyle = mg(528, 570); ctx.fillRect(528, 560, 42, 145);
+  ctx.fillStyle = '#6b6f76'; ctx.fillRect(466, 745, 10, 55); ctx.fillRect(544, 745, 10, 55);
+  for (const x0 of [444, 522]) {
+    const cg = ctx.createLinearGradient(x0, 0, x0 + 54, 0); cg.addColorStop(0, '#7a3c19'); cg.addColorStop(0.4, '#d9905f'); cg.addColorStop(1, '#6f3415');
+    ctx.fillStyle = cg; ctx.fillRect(x0, 592, 54, 84);
+    ctx.strokeStyle = 'rgba(60,25,8,0.45)'; ctx.lineWidth = 1;
+    for (let i = 0; i < 12; i++) { ctx.beginPath(); ctx.moveTo(x0, 596 + i * 7); ctx.lineTo(x0 + 54, 596 + i * 7); ctx.stroke(); }
+  }
+  // field lines between the pole faces
+  if (magT > 0.02) {
+    ctx.save(); ctx.globalAlpha *= magT; ctx.setLineDash([4, 5]); ctx.strokeStyle = '#6a5a8a'; ctx.lineWidth = 1.4;
+    for (let i = 0; i < 5; i++) { const y = 572 + i * 30; ctx.beginPath(); ctx.moveTo(493, y); ctx.lineTo(527, y); ctx.stroke(); }
+    ctx.setLineDash([]); ctx.restore();
+  }
+  // pan with counterweights
+  const panY = L[1] + 220;
+  ctx.strokeStyle = '#7d7568'; ctx.lineWidth = 1.3;
+  ctx.beginPath(); ctx.moveTo(...L); ctx.lineTo(L[0] - 38, panY); ctx.moveTo(...L); ctx.lineTo(L[0] + 38, panY); ctx.stroke();
+  softEllipse(L[0] + 8, panY + 12, 46, 6, 0.18);
+  const pan = ctx.createLinearGradient(L[0] - 42, 0, L[0] + 42, 0); pan.addColorStop(0, '#8d8577'); pan.addColorStop(0.5, '#e3ddd0'); pan.addColorStop(1, '#8d8577');
+  ctx.fillStyle = pan; ctx.beginPath(); ctx.ellipse(L[0], panY, 42, 8, 0, 0, Math.PI * 2); ctx.fill();
+  for (const [dx, h] of [[-12, 30], [12, 22]]) {
+    const wg = ctx.createLinearGradient(L[0] + dx - 10, 0, L[0] + dx + 10, 0); wg.addColorStop(0, '#8a6a2f'); wg.addColorStop(0.45, '#e0c177'); wg.addColorStop(1, '#7a5c26');
+    ctx.fillStyle = wg; ctx.fillRect(L[0] + dx - 10, panY - 4 - h, 20, h);
+  }
+  // sample tube (in front of the magnet)
+  const tTop = R[1] + 135;
+  ctx.strokeStyle = '#7d7568'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(...R); ctx.lineTo(R[0], tTop); ctx.stroke();
+  const tube = () => { ctx.beginPath(); ctx.moveTo(R[0] - 12, tTop); ctx.lineTo(R[0] - 12, tTop + 250); ctx.quadraticCurveTo(R[0] - 12, tTop + 262, R[0], tTop + 262); ctx.quadraticCurveTo(R[0] + 12, tTop + 262, R[0] + 12, tTop + 250); ctx.lineTo(R[0] + 12, tTop); };
+  tube(); ctx.fillStyle = 'rgba(230,240,244,0.5)'; ctx.fill();
+  ctx.save(); tube(); ctx.clip();
+  const lg = ctx.createLinearGradient(R[0] - 12, 0, R[0] + 12, 0);
+  lg.addColorStop(0, Studio.U.mix(I.col, '#000000', 0.15)); lg.addColorStop(0.45, I.col); lg.addColorStop(1, Studio.U.mix(I.col, '#000000', 0.2));
+  ctx.fillStyle = lg; ctx.fillRect(R[0] - 12, tTop + 60, 24, 210);
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fillRect(R[0] - 8, tTop + 10, 4, 240);
+  ctx.restore();
+  tube(); ctx.strokeStyle = 'rgba(95,115,125,0.7)'; ctx.lineWidth = 2; ctx.stroke();
+  // beam
+  ctx.save(); ctx.translate(PIV.x, PIV.y); ctx.rotate(th);
+  const beam = ctx.createLinearGradient(0, -5, 0, 5); beam.addColorStop(0, '#e3ddd0'); beam.addColorStop(1, '#8d8577');
+  ctx.fillStyle = beam; ctx.beginPath(); ctx.roundRect(-ARM - 6, -5, ARM * 2 + 12, 10, 4); ctx.fill();
+  ctx.restore();
+  sphere(PIV.x, PIV.y, 9, '#8d8577', null, { shadow: false });
+}
+function balanceReading(mu, magT) {
+  return 12.4 + magT * (mu > 0 ? 0.004 * mu * mu : -0.0015);
+}
+
+// ------------------------------------------------------------ orbital boxes + spin magnets
+function drawBoxes(els, m, prog) {
+  // 4s box, then five 3d boxes
+  const boxes = [[BOX.s, -1], ...[0, 1, 2, 3, 4].map(j => [BOX.d0 + j * BOX.w, j])];
+  const b = ctx.globalAlpha;
+  if (m > 0) {
+    ctx.globalAlpha = b * m;
+    for (const [x] of boxes) {
+      softEllipse(x + BOX.w / 2 + 4, BOX.y + BOX.h + 6, BOX.w * 0.5, 6, 0.18);
+      ctx.fillStyle = '#fffdf8'; ctx.strokeStyle = '#cfc6b4'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.roundRect(x + 3, BOX.y, BOX.w - 6, BOX.h, 6); ctx.fill(); ctx.stroke();
+    }
+    ctx.globalAlpha = b;
+  }
+  ctx.globalAlpha = b * (1 - 0.8 * m);
+  boxes.forEach(([x], i) => sk([[x + 3, BOX.y], [x + BOX.w - 3, BOX.y], [x + BOX.w - 3, BOX.y + BOX.h], [x + 3, BOX.y + BOX.h], [x + 3, BOX.y]], 300 + i * 7, prog, { w: 1.7 }));
+  ctx.globalAlpha = b;
+  hand('4s', bx(-1), BOX.y + BOX.h + 32, { size: 28, align: 'center', color: GRAY, prog });
+  hand('3d', bx(2), BOX.y + BOX.h + 32, { size: 28, align: 'center', color: GRAY, prog });
+  for (const e of els) {
+    const up = e.up, x = bx(e.box) + (up ? -11 : 11);
+    const y = lerp(BY - 95, BY, easeOut(e.p)) - 115 * easeOut(e.r);
+    const a = e.p * (1 - e.r);
+    if (e.r > 0 && e.r < 0.3) ringFx(x, BY, e.r / 0.3, ORANGE);
+    harpoon(x, y, up, 50, a, m, 500 + e.box * 13 + (up ? 0 : 5));
+  }
+}
+function drawMagnetRow(nU, pairs, mu, m, a) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('unpaired spins = little magnets', 660, 500, { size: 26, color: GRAY });
+  const shown = Math.min(nU, 5), x0 = 830 - (shown - 1) * 23;
+  for (let i = 0; i < shown; i++) barMagnet(x0 + i * 46, 578, true, 70, 22, 1, m, 700 + i * 9);
+  if (!shown) hand('no unpaired electrons', 830, 588, { size: 26, color: GRAY, align: 'center' });
+  hand(pairs ? `${pairs} pair${pairs > 1 ? 's' : ''} ↑↓ cancel out` : 'no pairs to cancel', 660, 648, { size: 23, color: GRAY });
+  hand(`n = ${nU}  →  μ = ${mu.toFixed(2)} BM`, 660, 690, { size: 30, color: ORANGE });
+  // μ bar (scale 0–6 BM)
+  const w = mu * 55;
+  sk([[660, 718], [660 + 6 * 55, 718]], 777, 1, { w: 1, color: GRAY, single: true, dash: [3, 5] });
+  if (w > 0) {
+    if (m > 0) { const bb = ctx.globalAlpha; ctx.globalAlpha = bb * m; ctx.fillStyle = '#c98a5a'; ctx.beginPath(); ctx.roundRect(660, 712, w, 12, 4); ctx.fill(); ctx.globalAlpha = bb; }
+    ctx.globalAlpha = b * a * (1 - 0.8 * m); sk([[660, 712], [660 + w, 712], [660 + w, 724], [660, 724], [660, 712]], 778, 1, { w: 1.4, color: ORANGE }); ctx.globalAlpha = b * a;
+  }
+  for (const v of [0, 2, 4, 6]) hand(String(v), 660 + v * 55, 746, { size: 17, color: GRAY, align: 'center' });
+  ctx.globalAlpha = b;
+}
+function drawSpinDemo(a, m, clk) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('why unpaired electrons make a magnet', 660, 470, { size: 28, prog: P(11.4, 12.2) });
+  // row 1: spinning electron → tiny magnet
+  const r1 = P(11.8, 12.4);
+  if (r1 > 0) {
+    ctx.globalAlpha = b * a * r1;
+    sphere(700, 540, 18, '#d4a24c', 'e⁻', { labelColor: '#4a3310', labelSize: 14 });
+    const ang = clk * 3;
+    sk(ellipsePts(700, 540, 30, 11, 18, ang, ang + 4.2), 801, 1, { w: 1.6, color: ORANGE, single: true });
+    ctx.globalAlpha = b * a;
+  }
+  arrowSk(740, 540, 800, 540, 803, P(12.4, 12.9), GRAY, 0.05);
+  barMagnet(830, 540, true, 70, 22, P(12.8, 13.3), m, 805);
+  hand('spinning charge = a tiny magnet', 870, 548, { size: 24, color: ORANGE, prog: P(13.0, 13.8) });
+  // row 2: paired
+  barMagnet(700, 640, true, 60, 20, P(14.0, 14.4), m, 811); barMagnet(736, 640, false, 60, 20, P(14.2, 14.6), m, 813);
+  hand('paired ↑↓ → the two cancel, no pull', 780, 648, { size: 24, color: GRAY, prog: P(14.5, 15.4) });
+  // row 3: unpaired add
+  for (let i = 0; i < 3; i++) barMagnet(700 + i * 36, 735, true, 60, 20, P(15.8 + i * 0.2, 16.2 + i * 0.2), m, 821 + i);
+  hand('unpaired ↑ ↑ ↑ → they add up', 820, 743, { size: 24, color: ORANGE, prog: P(16.4, 17.2) });
+  hand('→ pulled into a magnetic field: paramagnetic', 660, 795, { size: 24, color: ORANGE, prog: P(17.2, 18.0) });
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ notebook views
+function drawOrbitals(a, ionIdx, ionA) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const I = ionInfo(ionIdx);
+  hand('which electrons leave first?', 1070, 205, { size: 38, prog: P(19.0, 19.8) });
+  const levels = (x0, y3d, y4s, c, label, alpha) => {
+    const bb = ctx.globalAlpha; ctx.globalAlpha = bb * alpha;
+    hand(label, x0 + 70, 262, { size: 25, color: GRAY, align: 'center' });
+    for (let j = 0; j < 5; j++) {
+      sk([[x0 + j * 30, y3d], [x0 + j * 30 + 24, y3d]], 900 + x0 + j, 1, { w: 2.4 });
+      const nE = (j < c.d ? 1 : 0) + (j < c.d - 5 ? 1 : 0);
+      if (nE >= 1) harpoon(x0 + j * 30 + 7, y3d - 16, true, 24, 1, 0, 950 + j);
+      if (nE >= 2) harpoon(x0 + j * 30 + 17, y3d - 16, false, 24, 1, 0, 960 + j);
+    }
+    sk([[x0 + 58, y4s], [x0 + 82, y4s]], 970 + x0, 1, { w: 2.4 });
+    if (c.s >= 1) harpoon(x0 + 65, y4s - 16, true, 24, 1, 0, 975);
+    if (c.s >= 2) harpoon(x0 + 75, y4s - 16, false, 24, 1, 0, 976);
+    hand('3d', x0 - 10, y3d + 7, { size: 22, color: GRAY, align: 'right' });
+    hand('4s', x0 + 48, y4s + 7, { size: 22, color: GRAY, align: 'right' });
+    ctx.globalAlpha = bb;
+  };
+  sk([[1080, 290], [1080, 610]], 990, 1, { w: 1.3, color: GRAY }); hand('↑ energy', 1085, 300, { size: 20, color: GRAY });
+  levels(1125, 400, 520, I.atom, `in the atom (${I.sym})`, 1);
+  hand('4s is lower → it fills first', 1195, 572, { size: 21, color: GRAY, align: 'center' });
+  sk([[1300, 280], [1300, 620]], 991, 1, { w: 1, color: GRAY, dash: [4, 6], single: true });
+  levels(1350, 480, 380, I.cfg, `in the ion (${I.name})`, ionA);
+  ctx.globalAlpha = b * a * ionA;
+  hand('3d drops below 4s,', 1420, 572, { size: 21, color: GRAY, align: 'center' });
+  hand('so the 4s electrons leave first', 1420, 598, { size: 21, color: ORANGE, align: 'center' });
+  ctx.globalAlpha = b * a;
+  // right vs wrong configuration
+  const wrongD = I.atom.d - I.q;
+  const wp = TT === null ? 1 : Lr(TT, 28.0, 29.2), rp = TT === null ? 1 : Lr(TT, 29.2, 30.0);
+  if (wrongD >= 0 && I.atom.s > 0) {
+    const w = hand(`${I.name} = ${cfgStr({ s: I.atom.s, d: wrongD })}`, 1110, 690, { size: 30, color: GRAY, prog: wp });
+    if (wp >= 1) { sk([[1104, 680], [1116 + w, 680]], 993, 1, { w: 2.2, color: ORANGE }); hand('✗ wrong', 1124 + w, 690, { size: 24, color: ORANGE }); }
+  }
+  const w2 = hand(`${I.name} = ${cfgStr(I.cfg)}`, 1110, 745, { size: 30, color: INK, prog: rp });
+  if (rp >= 1) hand('✓', 1124 + w2, 745, { size: 30, color: '#4f8a63' });
+  ctx.globalAlpha = b;
+}
+function drawGraph(a, curIdx) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('μ = √(n(n + 2)) BM', 1070, 205, { size: 38 });
+  const { X, Y } = sketchAxes({ x0: 1110, y0: 270, x1: 1490, y1: 730 }, { xmin: 0, xmax: 5.4, ymin: 0, ymax: 6.6 },
+    { xlabel: 'n  (unpaired e⁻)', ylabel: 'μ (BM)', xticks: [0, 1, 2, 3, 4, 5], yticks: [0, 2, 4, 6], seed: 1201 });
+  const curve = []; for (let v = 0; v <= 5.3; v += 0.1) curve.push([X(v), Y(muOf(v))]);
+  sk(curve, 1210, 1, { w: 1.3, color: GRAY, single: true });
+  const cur = ionInfo(curIdx);
+  for (let nU = 0; nU <= 5; nU++) {
+    const pp = TT === null ? 1 : Lr(TT, 39.6 + nU * 1.2, 40.4 + nU * 1.2);
+    if (pp <= 0) continue;
+    const bb = ctx.globalAlpha; ctx.globalAlpha = bb * pp;
+    const px = X(nU), py = Y(muOf(nU)), names = IONS.map((_, i) => ionInfo(i)).filter(I => I.n === nU).map(I => I.name).join(', ');
+    ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(px, py, 5.5, 0, Math.PI * 2); ctx.fill();
+    const right = nU < 4, ny = nU === 0 ? py - 36 : py + 18;
+    hand(`${muOf(nU).toFixed(2)}`, px + (right ? 12 : -12), py - 12, { size: 21, align: right ? 'left' : 'right' });
+    hand(names, px + (right ? 12 : -12), ny, { size: 17, color: GRAY, align: right ? 'left' : 'right' });
+    ctx.globalAlpha = bb;
+  }
+  const cx = X(cur.n), cy = Y(cur.mu);
+  ctx.fillStyle = ORANGE; ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#f3f0e8'; ctx.lineWidth = 3; ctx.stroke();
+  if (cur.n === 0) hand(cur.name, cx + 14, cy - 64, { size: 28, color: ORANGE }); else hand(cur.name, cx - 16, cy + (cur.n >= 4 ? -44 : -18), { size: 28, color: ORANGE, align: 'right' });
+  ctx.globalAlpha = b;
+}
+function drawWorking(a, ionIdx) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const I = ionInfo(ionIdx), X = 1070, sz = 32, n = I.n;
+  hand(`Z = ${I.Z} → ${I.sym} : ${cfgStr(I.atom)}`, X, 220, { size: sz, prog: P(32.0, 32.8) });
+  hand(`${I.name} : take ${I.q} e⁻ away, 4s first`, X, 272, { size: sz, prog: P(32.8, 33.6) });
+  hand(`      → ${cfgStr(I.cfg)}`, X, 316, { size: sz, prog: P(33.6, 34.2) });
+  hand(I.cfg.d ? `3d${sup(I.cfg.d)} :  ${boxStr(I.cfg.d)}   n = ${n}` : `no 3d electrons   n = ${n}`, X, 370, { size: sz, prog: P(34.2, 35.0) });
+  hand('μ = √(n(n + 2)) BM', X, 438, { size: sz, prog: P(35.2, 35.8) });
+  hand(`   = √(${n} × ${n + 2}) = √${n * (n + 2)}`, X, 486, { size: sz, prog: P(35.8, 36.6) });
+  const fin = P(36.8, 37.3);
+  if (fin > 0) {
+    const w = hand(`μ = ${I.mu.toFixed(2)} BM`, X + 20, 575, { size: 50, color: ORANGE, weight: 700, prog: fin });
+    const cp = P(37.2, 37.7);
+    if (cp > 0) sk(ellipsePts(X + 20 + w / 2, 560, w / 2 + 26, 38, 30, -2.2, -2.2 + Math.PI * 2.15), 1301, cp, { w: 2.2, color: ORANGE });
+  }
+  const nt = ionIdx === CO ? 'spin-only value · H₂O is a weak-field ligand, so Co²⁺ stays high spin'
+    : n === 0 ? 'no unpaired electrons → diamagnetic (weakly pushed out)' : `${n} unpaired electron${n > 1 ? 's' : ''} → paramagnetic (pulled in)`;
+  hand(nt, X, 660, { size: 21, color: GRAY, prog: P(37.6, 38.2) });
+  if (ionIdx === CO) hand('(see the crystal-field lesson for why)', X, 688, { size: 20, color: GRAY, prog: P(37.8, 38.3) });
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ tour notes
+function drawTourNotes(t, m) {
+  note(t, 7.2, 7.9, 10.6, p => { hand('Gouy balance', 150, 610, { size: 32, color: ORANGE, align: 'center', prog: p }); arrowSk(190, 590, 340, 520, 1401, p); });
+  note(t, 7.8, 8.5, 10.6, p => { hand('electromagnet', 730, 790, { size: 30, color: ORANGE, align: 'center', prog: p }); arrowSk(660, 780, 585, 700, 1403, p); });
+  note(t, 8.4, 9.1, 10.6, p => hand('the sample hangs between the poles', 150, 672, { size: 24, color: GRAY, align: 'center', prog: p }));
+  note(t, 20.0, 20.8, 24.8, p => hand('4s fills first, then 3d', 560, 432, { size: 26, color: ORANGE, prog: p }));
+  note(t, 22.0, 22.8, 24.8, p => hand("Hund: one in each box before pairing", 560, 462, { size: 24, color: GRAY, prog: p }));
+  note(t, 25.6, 26.4, 31.0, p => hand('remove the 4s electrons first!', 560, 432, { size: 26, color: ORANGE, prog: p }));
+  note(t, 28.8, 29.6, 31.0, p => hand('3 boxes with a single ↑  →  3 unpaired', 560, 462, { size: 24, color: GRAY, prog: p }));
+  note(t, 40.2, 41.0, 47.8, p => hand('Co²⁺ · n = 3 → pulled in', 70, 640, { size: 25, color: ORANGE, prog: p }));
+  note(t, 42.8, 43.6, 47.8, p => hand('Zn²⁺ · n = 0 → pushed out', 70, 676, { size: 25, color: GRAY, prog: p }));
+  note(t, 45.3, 46.1, 47.8, p => hand('Mn²⁺ · n = 5 → pulled hardest', 70, 712, { size: 25, color: ORANGE, prog: p }));
+  note(t, 48.3, 49.2, 60, p => { hand('your turn', 1380, 940, { size: 54, color: ORANGE, prog: p, weight: 700, align: 'center' }); arrowSk(1470, 925, 1580, 900, 1409, p); });
+}
+
+// ------------------------------------------------------------ lesson
+const labSeq = ion => seqFor(atomCfg(IONS[ion].Z)).length;
+Studio.lesson({
+  id: 'magnetic-moment',
+  unit: 'Unit 4 · The d- and f-Block Elements',
+  title: 'The Magnetic Ion',
+  headline: 'Spin-only magnetic moment',
+  panelEyebrow: 'Magnetism lab',
+  intro: 'A Gouy balance and a box of electrons, brought to life. See why unpaired electrons make an ion magnetic, fill the orbitals for Z = 27, and weigh the pull.',
+  welcome: { title: 'Why are some ions pulled by a magnet?', text: 'Press Play the tour for a 50-second guided story, or jump straight into the lab.', formula: 'μ = √(n(n + 2)) BM' },
+  problem: {
+    html: 'Calculate the spin-only magnetic moment of<span class="cell">M²⁺(aq), atomic number Z = 27</span>Use μ = √(n(n + 2)) BM, where n is the number of unpaired electrons.',
+    answer: 'Z = 27 is Co: [Ar] 3d⁷4s². Co²⁺ loses the 4s electrons → 3d⁷, n = 3, μ = √15 ≈ 3.87 BM', revealAt: 37.3, revealChapter: 'SOLVE',
+  },
+  tourEnd: 51,
+  introT: 6,
+  chapters: [
+    { t: 0, key: 'SKETCH', title: 'A balance and a magnet', text: 'A Gouy balance: a sample tube hangs from one arm, with its bottom between the poles of an electromagnet. Next to it, one 4s box and five 3d boxes for the electrons.', formula: 'M²⁺ (Z = 27): how magnetic is it?' },
+    { t: 6, key: 'BUILD', title: 'Brought to life', text: 'When the magnet is switched on, a magnetic sample is pulled down into the field and the balance reads a little heavier. How strong the pull is depends on the ion\'s electrons.', formula: 'stronger pull ⇔ larger magnetic moment μ' },
+    { t: 11, key: 'SPINS', title: 'Every electron is a tiny magnet', text: 'A spinning electron behaves like a tiny bar magnet. Two electrons paired in one orbital spin opposite ways, so their magnets cancel. Unpaired electrons all point the same way and add up, so the ion is attracted by a magnet: it is paramagnetic.', formula: 'unpaired electrons → paramagnetic' },
+    { t: 18.5, key: 'FILL', title: 'Z = 27 is cobalt', text: 'Fill the electrons for Z = 27: after [Ar], 4s fills first, then 3d. Hund\'s rule puts one electron in each 3d box before any pairing. Cobalt ends up as [Ar] 3d⁷ 4s².', formula: 'Co : [Ar] 3d⁷ 4s²' },
+    { t: 25, key: 'IONISE', title: 'Co → Co²⁺: 4s leaves first', text: 'Once the ion forms, 3d drops below 4s, so the two 4s electrons are removed, not 3d ones. Co²⁺ is [Ar] 3d⁷: two paired boxes and three boxes with a single electron.', formula: 'Co²⁺ : [Ar] 3d⁷  →  n = 3' },
+    { t: 31.5, key: 'SOLVE', title: 'Now the formula', text: 'The spin-only formula turns the number of unpaired electrons into a magnetic moment in Bohr magnetons: μ = √(n(n + 2)). With n = 3, μ = √15 ≈ 3.87 BM.', formula: 'μ = √(3 × 5) = √15 = 3.87 BM' },
+    { t: 38.5, key: 'BALANCE', title: 'Weigh the pull', text: 'Magnet on: Co²⁺ is pulled in and the balance reads heavier. Zn²⁺ (3d¹⁰, nothing unpaired) is diamagnetic and is pushed out slightly. Mn²⁺ (3d⁵, five unpaired) has the largest moment, 5.92 BM, and is pulled hardest.', formula: 'n = 0 … 5  →  μ = 0, 1.73, 2.83, 3.87, 4.90, 5.92 BM' },
+    { t: 48, key: 'YOUR TURN', title: 'Your turn', text: 'Pick any 3d ion, watch its electrons fill and leave, switch the magnet on, and try to complete all four challenges.', formula: '' },
+  ],
+  camera: [[0, 800, 500, 1], [6, 800, 500, 1], [8.5, 560, 540, 1.25], [11, 560, 540, 1.25], [12.5, 830, 630, 1.8], [18, 830, 630, 1.8],
+    [19.5, 930, 420, 1.25], [31, 930, 420, 1.25], [32.5, 1270, 470, 1.45], [38, 1270, 470, 1.45], [39.5, 800, 510, 1], [99, 800, 510, 1]],
+  tourState(t) {
+    let ion = CO; if (t >= 42.4) ion = ZN; if (t >= 44.9) ion = MN;
+    let fillK = 99, removeK = 99;
+    if (t < 38.5) { fillK = Lr(t, 19.5, 24.3) * 9; removeK = Lr(t, 25.8, 27.6) * 2; }
+    return {
+      ion, fillK, removeK, magnet: S(t, 39.5, 40.2), m: S(t, 6.5, 9.5),
+      demo: S(t, 11.2, 11.8) * (1 - S(t, 18.2, 18.8)),
+      views: { orbitals: S(t, 18.8, 19.6) * (1 - S(t, 31.2, 31.8)), working: S(t, 31.8, 32.6) * (1 - S(t, 38.3, 38.9)), graph: S(t, 38.9, 39.7) },
+    };
+  },
+  initLab: () => ({ ion: String(CO), magnet: false, magT: 0, anim: 99, stepMode: false, m: 1, view: 'orbitals', slow: false, seen: {} }),
+  labState(lab) {
+    const ion = +lab.ion, N = labSeq(ion), t1 = N * 0.25 + 0.5;
+    return { ion, fillK: lab.anim / 0.25, removeK: Math.max(0, (lab.anim - t1) / 0.4), magnet: lab.magT, m: lab.m, demo: 0 };
+  },
+  step(lab, dt) {
+    lab.anim += dt * (lab.stepMode ? 0.35 : 1);
+    lab.magT += ((lab.magnet ? 1 : 0) - lab.magT) * Math.min(1, dt * 3);
+    const ion = +lab.ion, N = labSeq(ion);
+    if (lab.anim > N * 0.25 + 0.5 + IONS[ion].q * 0.4) {
+      const n = ionInfo(ion).n;
+      (lab.seen[n] = lab.seen[n] || {})[ion] = true;
+    }
+  },
+  draw(env) {
+    ctx = env.ctx; TT = env.TT; P = env.P;
+    const lab = env.mode === 'lab' ? env.lab : null, st = env.st;
+    if (lab && env.snap) lab.magT = lab.magnet ? 1 : 0;
+    const m = st.m, magT = st.magnet, I = ionInfo(st.ion);
+    if (lab) for (const v in vA) vA[v] = env.snap ? (v === lab.view ? 1 : 0) : lerp(vA[v], v === lab.view ? 1 : 0, 1 - Math.exp(-env.rawDt * 7));
+    const views = lab ? vA : st.views;
+
+    // balance tilt: pull ∝ μ² (diamagnetic ions are pushed out a little)
+    const want = magT * (I.mu > 0 ? clamp(0.1 * I.mu * I.mu, 0, 3.5) : -0.3) * Math.PI / 180;
+    tiltS = env.snap ? want : lerp(tiltS, want, 1 - Math.exp(-env.rawDt * 4));
+
+    hand('Magnetic moment', 60, 100, { size: 50, weight: 700, prog: P(3.8, 4.8) });
+    hand('spin-only · Gouy balance', 62, 140, { size: 28, color: GRAY, prog: P(4.4, 5.2) });
+
+    // balance: sketch underneath, model on top
+    ctx.globalAlpha = 1 - 0.82 * m; drawBalanceSketch(tiltS, st.ion); ctx.globalAlpha = 1;
+    const tipSketch = Studio.pencilTip;
+    if (m > 0) { ctx.globalAlpha = m; drawBalanceModel(tiltS, st.ion, magT); ctx.globalAlpha = 1; }
+    const R = beamEnds(tiltS).R;
+    const read = balanceReading(I.mu, magT);
+    // balance LCD reading
+    if (m > 0) {
+      ctx.globalAlpha = m;
+      const lg = ctx.createLinearGradient(0, 814, 0, 840); lg.addColorStop(0, '#c4cfae'); lg.addColorStop(1, '#a9b692');
+      ctx.fillStyle = lg; ctx.beginPath(); ctx.roundRect(144, 814, 184, 26, 4); ctx.fill();
+      ctx.fillStyle = '#1e2518'; ctx.font = `700 19px ${MONO}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(read.toFixed(4) + ' g', 236, 828);
+      ctx.globalAlpha = 1;
+    }
+    if (m < 1) { ctx.globalAlpha = (1 - 0.82 * m) * P(4.9, 5.4); hand(read.toFixed(3) + ' g', 236, 838, { size: 26, align: 'center' }); ctx.globalAlpha = 1; }
+    const tagA = TT === null ? 1 : S(TT, 8.5, 9.5);
+    tag(R[0] + 86, R[1] + 272, `${I.name}(aq)`, { alpha: tagA, color: '#6b3f4a', leader: [R[0] + 14, R[1] + 290] });
+    tag(510, 776, magT > 0.5 ? 'magnet ON' : 'magnet OFF', { alpha: tagA, size: 13, color: magT > 0.5 ? '#9e3d34' : GRAY });
+
+    // question label above the boxes
+    let label = `${I.name}   (Z = ${I.Z})`;
+    if (TT !== null && TT < 18.5) label = 'M²⁺ with Z = 27';
+    else if (TT !== null && TT < 25.8) label = 'Z = 27 → cobalt, Co';
+    hand(label, 560, 205, { size: 36, prog: P(4.2, 5.0) });
+
+    // electrons in the boxes
+    const els = electrons(st.ion, st.fillK, st.removeK);
+    drawBoxes(els, m, P(3.6, 4.8));
+    const N = seqFor(I.atom).length, filled = st.fillK >= N, ionised = st.removeK >= I.q;
+    let cfgLine = '';
+    if (ionised) cfgLine = `${I.name} : ${cfgStr(I.cfg)}`;
+    else if (filled && st.removeK <= 0) cfgLine = `${I.sym} : ${cfgStr(I.atom)}`;
+    if (cfgLine) hand(cfgLine, 820, BOX.y + BOX.h + 72, { size: 30, align: 'center', color: INK });
+
+    const { nU, pairs } = countUnpaired(els);
+    drawSpinDemo(st.demo, m, env.clock);
+    drawMagnetRow(nU, pairs, muOf(nU), m, TT === null ? 1 : S(TT, 18.8, 19.4));
+
+    drawOrbitals(views.orbitals, st.ion, TT === null ? 1 : S(TT, 25.6, 26.4));
+    drawWorking(views.working, st.ion);
+    drawGraph(views.graph, st.ion);
+
+    if (env.mode === 'tour') drawTourNotes(TT, m);
+    if (lab) {
+      const d = read - 12.4;
+      const msg = magT < 0.5 ? "magnet off: press 'Magnet on' to weigh the pull"
+        : I.n === 0 ? `diamagnetic: pushed out slightly (${d.toFixed(4)} g)` : `paramagnetic: pulled in, +${d.toFixed(4)} g`;
+      hand(msg, 560, 452, { size: 25, color: ORANGE });
+    }
+    Studio.pencilTip = tipSketch || Studio.pencilTip;
+  },
+  stats: [{ id: 'ion', label: 'ION' }, { id: 'd', label: 'D-COUNT' }, { id: 'n', label: 'UNPAIRED' }, { id: 'mu', label: 'μ' }],
+  statValues(st) {
+    const I = ionInfo(st.ion);
+    return { ion: I.name, d: `3d<sup>${I.cfg.d}</sup>`, n: String(I.n), mu: `${I.mu.toFixed(2)}<small>BM</small>` };
+  },
+  now(st, lab) {
+    const I = ionInfo(st.ion), n = I.n;
+    let title = `${I.name} · ${cfgStr(I.cfg).replace('[Ar] ', '') || 'no 3d electrons'} · ${n} unpaired`, text;
+    const lost = I.atom.s >= I.q ? `${I.q} electron${I.q > 1 ? 's' : ''} from 4s` : `${I.atom.s} from 4s and ${I.q - I.atom.s} from 3d`;
+    text = `${I.sym} is ${cfgStr(I.atom)}. Forming ${I.name} removes ${lost} (4s always goes first), leaving ${cfgStr(I.cfg)}. `;
+    if (n === 0) text += 'Every electron is paired, so the tiny magnets cancel: the ion is diamagnetic and is pushed slightly out of the field.';
+    else if (n === 5) text += 'Five boxes, five single electrons: this is the largest spin-only moment in the series.';
+    else text += `${n} box${n > 1 ? 'es hold' : ' holds'} a single electron, so ${n > 1 ? 'their magnets add up' : 'its magnet is not cancelled'} and the ion is paramagnetic.`;
+    if (I.Z === 24 || I.Z === 29) text += ` (Note: the ${I.sym} atom is an exception, 3d${sup(I.atom.d)} 4s¹.)`;
+    if (lab.magT > 0.5) text += n === 0 ? ' With the magnet on, the balance reads slightly lighter.' : ` With the magnet on, the balance reads ${(balanceReading(I.mu, 1) - 12.4).toFixed(4)} g heavier.`;
+    return { title, text, formula: `μ = √(n(n + 2)) = √(${n} × ${n + 2}) = ${I.mu.toFixed(2)} BM` };
+  },
+  controls: [
+    { type: 'segment', key: 'ion', label: 'Ion · first half of the 3d series', options: [0, 1, 2, 3, 4, 5].map(i => [String(i), IONS[i].name]),
+      onChange: l => { l.anim = 0; l.stepMode = false; } },
+    { type: 'segment', key: 'ion', label: 'Ion · second half', options: [6, 7, 8, 9, 10, 11].map(i => [String(i), IONS[i].name]),
+      onChange: l => { l.anim = 0; l.stepMode = false; } },
+    { type: 'button', label: l => l.magnet ? 'Magnet off' : 'Magnet on', onClick: l => { l.magnet = !l.magnet; },
+      chips: [{ key: 'slow', label: 'Slow motion' }] },
+    { type: 'button', dark: false, label: 'Fill the electrons step by step', onClick: l => { l.anim = 0; l.stepMode = true; } },
+    { type: 'slider', label: 'Sketch — Model', min: 0, max: 1, ends: ['SKETCH', 'MODEL'], get: l => l.m, set: (l, v) => { l.m = v; } },
+    { type: 'segment', key: 'view', label: 'Notebook view', options: [['orbitals', 'Orbitals'], ['graph', 'μ vs n'], ['working', 'Working']] },
+  ],
+  challenges: [
+    { id: 'max', text: 'Find an ion with the largest spin-only moment', hint: 'How many 3d boxes can hold a single electron?', test: l => ionInfo(+l.ion).n === 5 },
+    { id: 'dia', text: 'Find a diamagnetic ion and switch the magnet on', hint: 'It needs no unpaired electrons at all.', test: l => ionInfo(+l.ion).n === 0 && l.magT > 0.5 },
+    { id: 'one', text: 'Find an ion with μ = 1.73 BM', hint: 'μ = √3 means n = 1.', test: l => ionInfo(+l.ion).n === 1 },
+    { id: 'twins', text: 'Find two different ions with the same μ', hint: 'Try ions that sit on either side of 3d⁵.', test: l => Object.values(l.seen).some(o => Object.keys(o).length >= 2) },
+  ],
+  quiz: {
+    question: 'Cobalt is [Ar] 3d⁷ 4s². When it forms <b>Co²⁺</b>, which electrons leave first?',
+    options: ['Two 3d electrons', 'Two 4s electrons', 'One 4s and one 3d electron'], correct: 1,
+    right: '✓ Right. Once the ion forms, 3d drops below 4s in energy, so the outer 4s electrons go first. Co²⁺ is [Ar] 3d⁷ with 3 unpaired electrons, μ = 3.87 BM.',
+    wrong: '✗ Not quite. Removing 3d electrons would give [Ar] 3d⁵ 4s², which is wrong. The 4s electrons are outermost and leave first, so Co²⁺ is [Ar] 3d⁷.',
+  },
+});
+})();
+</script>
+</body>
+</html>

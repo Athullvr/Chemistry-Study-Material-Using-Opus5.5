@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New lesson · Sketch to Chemistry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/studio.css">
+</head>
+<body>
+<!--
+  LESSON TEMPLATE
+  1. Copy this file to lessons/<your-id>.html
+  2. Fill in every "TODO" below (lessons/nernst.html is the fullest worked example)
+  3. Add an entry for it to shared/catalog.js so it appears on the home page
+  Open lessons/<your-id>.html#t=10 to jump into the tour, or #lab to open the lab.
+-->
+<script src="../shared/catalog.js"></script>
+<script src="../shared/studio.js"></script>
+<script>
+(() => {
+const { clamp, S, Lr, lerp, sci, sgn } = Studio.U;          // maths + formatting helpers
+const { INK, GRAY, ORANGE, BLUE } = Studio.C;                // the palette
+const { sk, hand, arrowSk, hatch, sphere, bead, tag, softEllipse, sketchAxes, ellipsePts } = Studio.draw;
+let ctx, TT, P;                                              // set at the start of every draw()
+
+// TODO: the chemistry (pure functions of the state)
+const PROBLEM = { x: 1 };
+const answerOf = s => s.x * 2;
+
+Studio.lesson({
+  id: 'my-lesson',                                            // TODO: must match the catalog id
+  unit: 'Unit N · Unit name',                                 // TODO
+  title: 'Lesson title',                                      // TODO: shown on the intro card
+  headline: 'Short panel headline',                           // TODO
+  intro: 'One or two sentences for the intro card.',          // TODO
+  welcome: { title: 'A hook question', text: 'Press Play the tour, or jump into the lab.', formula: 'key formula' },
+  problem: {
+    html: 'TODO: the question as HTML. Use <span class="cell">…</span> for a monospace line.',
+    answer: 'TODO: the worked answer in one line',
+    revealAt: 30, revealChapter: 'SOLVE',                     // tour second at which the answer appears
+  },
+  tourEnd: 40,                                                // TODO: total tour length in seconds
+  introT: 6,                                                  // tour time shown behind the intro card
+  sketchPencil: [0.3, 6.2],                                   // when the drawing pencil is in the hand
+  chapters: [                                                 // TODO: 6–8 chapters; text is also the caption
+    { t: 0, key: 'SKETCH', title: 'Chapter title', text: 'What the student should notice.', formula: '' },
+    { t: 6, key: 'BUILD', title: 'Brought to life', text: '…', formula: '' },
+    { t: 12, key: 'IDEA', title: 'The concept', text: '…', formula: '' },
+    { t: 24, key: 'SOLVE', title: 'The class problem', text: '…', formula: '' },
+    { t: 34, key: 'YOUR TURN', title: 'Your turn', text: 'Try the controls and the challenges.', formula: '' },
+  ],
+  camera: [[0, 800, 500, 1], [99, 800, 500, 1]],              // [t, x, y, zoom] keys in paper coords (1600 × 1000)
+
+  // state shown during the tour: must depend only on t so the timeline can be scrubbed
+  tourState: t => ({ ...PROBLEM, m: S(t, 6.5, 9.5) }),       // m = sketch → model morph (0..1)
+  // state for the lab; Reset calls this again
+  initLab: () => ({ ...PROBLEM, m: 1, view: 'main', slow: false }),
+  step(lab, dt) { /* optional: advance lab dynamics */ },
+
+  draw(env) {                                                 // env: { st, lab, mode, TT, P, dt, rawDt, clock, snap }
+    ctx = env.ctx; TT = env.TT; P = env.P;
+    const st = env.mode === 'lab' ? env.lab : env.st, m = st.m;
+    hand('Lesson title', 60, 100, { size: 50, prog: P(3.8, 4.8), weight: 700 });   // P(a, b) = draw-in progress
+    ctx.globalAlpha = 1 - 0.82 * m;                           // pencil sketch layer
+    sk([[300, 700], [700, 700]], 1, P(0.5, 1.5), { w: 2 });
+    ctx.globalAlpha = m;                                      // model layer (matte, soft shadows, no glow)
+    softEllipse(500, 710, 220, 18, 0.25);
+    sphere(500, 600, 40, '#7c9fca', 'A');
+    ctx.globalAlpha = 1;
+    tag(500, 780, `answer ${answerOf(st)}`, { color: BLUE });
+  },
+
+  stats: [{ id: 'a', label: 'ANSWER' }, { id: 'b', label: 'INPUT' }],
+  statValues: st => ({ a: String(answerOf(st)), b: String(st.x) }),
+  now: (st, lab) => ({ title: 'What is happening', text: 'Live explanation.', formula: `answer = 2 × ${st.x}` }),
+  controls: [                                                 // slider · button (+chips) · chips · segment · html
+    { type: 'slider', label: 'Input x', min: 0, max: 10, step: 0.1, ends: ['LOW', 'HIGH'], get: l => l.x, set: (l, v) => { l.x = v; }, show: l => l.x.toFixed(1) },
+    { type: 'slider', label: 'Sketch — Model', min: 0, max: 1, ends: ['SKETCH', 'MODEL'], get: l => l.m, set: (l, v) => { l.m = v; } },
+    { type: 'segment', key: 'view', label: 'Notebook view', options: [['main', 'Main'], ['working', 'Working']] },
+  ],
+  challenges: [                                               // test(lab, st) → true when achieved
+    { id: 'c1', text: 'Make the answer bigger than 10', hint: 'Move the slider.', test: l => answerOf(l) > 10 },
+  ],
+  quiz: { question: 'A prediction question?', options: ['A', 'B', 'C'], correct: 1, right: '✓ Why B is right.', wrong: '✗ A hint.' },
+});
+})();
+</script>
+</body>
+</html>

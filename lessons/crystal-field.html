@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crystal Field Colour · Sketch to Chemistry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/studio.css">
+</head>
+<body>
+<script src="../shared/catalog.js"></script>
+<script src="../shared/studio.js"></script>
+<script>
+(() => {
+const { clamp, clamp01, S, Lr, lerp, easeOut, hash, sci, sgn } = Studio.U;
+const { INK, GRAY, ORANGE, SANS, MONO } = Studio.C;
+const { sk, hatch, hand, arrowSk, softEllipse, sphere, bead, ringFx, ellipsePts, sketchAxes } = Studio.draw;
+let ctx, TT, P;                        // set at the start of every draw()
+
+// ------------------------------------------------------------ physics
+const H = 6.626e-34, CL = 3.0e8, NA = 6.022e23;
+const NAHC = NA * H * CL;                           // J m mol⁻¹ (≈ 0.1197)
+const lamOf = d => NAHC / (d * 1000) * 1e9;         // Δₒ (kJ/mol) → absorbed λ (nm)
+const D_H2O = NAHC / 498e-9 / 1000;                 // 240.4 kJ/mol, exactly the 498 nm of the problem
+const LIG_ORDER = ['I', 'Br', 'Cl', 'F', 'H2O', 'NH3', 'en', 'CN'];
+const LIG_LABEL = { I: 'I⁻', Br: 'Br⁻', Cl: 'Cl⁻', F: 'F⁻', H2O: 'H₂O', NH3: 'NH₃', en: 'en', CN: 'CN⁻' };
+// illustrative Δₒ values for a Ti³⁺-like ion (only H₂O is the real, given value)
+const LIG = { I: 160, Br: 175, Cl: 190, F: 215, H2O: D_H2O, NH3: 285, en: 300, CN: 390 };
+const LV = LIG_ORDER.map(k => LIG[k]);
+const deltaAtIdx = f => { const i = clamp(Math.floor(f), 0, 6); return lerp(LV[i], LV[i + 1], clamp01(f - i)); };
+const idxOfDelta = d => { if (d <= LV[0]) return 0; for (let i = 0; i < 7; i++) if (d <= LV[i + 1]) return i + (d - LV[i]) / (LV[i + 1] - LV[i]); return 7; };
+
+// ------------------------------------------------------------ colour
+function wl(l) {                                     // wavelength (nm) → linear RGB 0..1
+  let r = 0, g = 0, b = 0;
+  if (l >= 380 && l < 440) { r = -(l - 440) / 60; b = 1; }
+  else if (l >= 440 && l < 490) { g = (l - 440) / 50; b = 1; }
+  else if (l >= 490 && l < 510) { g = 1; b = -(l - 510) / 20; }
+  else if (l >= 510 && l < 580) { r = (l - 510) / 70; g = 1; }
+  else if (l >= 580 && l < 645) { r = 1; g = -(l - 645) / 65; }
+  else if (l >= 645 && l <= 750) { r = 1; }
+  let f = 0;
+  if (l >= 380 && l < 420) f = 0.3 + 0.7 * (l - 380) / 40; else if (l >= 420 && l <= 700) f = 1; else if (l > 700 && l <= 750) f = 0.3 + 0.7 * (750 - l) / 50;
+  return [r * f, g * f, b * f];
+}
+function hueOf([r, g, b]) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  if (d < 1e-6) return { h: 0, s: 0 };
+  let h; if (mx === r) h = ((g - b) / d + 6) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4;
+  return { h: h * 60, s: d / mx };
+}
+// A real d–d band is broad (for Ti³⁺ it even has a second component near 575 nm),
+// so the absorption is modelled as two overlapping Gaussians around λa.
+const absorbAt = (l, la) => Math.min(0.95, 0.92 * Math.exp(-(((l - la) / 40) ** 2)) + 0.6 * Math.exp(-(((l - la * 1.166) / 40) ** 2)));
+const TCACHE = new Map();
+function seenOf(la) {                                // colour of white light after the sample
+  const key = Math.round(la);
+  if (TCACHE.has(key)) return TCACHE.get(key);
+  const s = [0, 0, 0], w = [0, 0, 0];
+  for (let l = 380; l <= 750; l += 2) { const c = wl(l), T = 1 - absorbAt(l, key); for (let k = 0; k < 3; k++) { s[k] += c[k] * T; w[k] += c[k]; } }
+  const res = hueOf(s.map((v, k) => v / w[k]));
+  res.name = res.s < 0.1 ? 'colourless' : hueName(res.h);
+  res.css = res.s < 0.1 ? '#ece8df' : `hsl(${res.h.toFixed(0)}, 34%, 57%)`;
+  TCACHE.set(key, res); return res;
+}
+function hueName(h) {
+  if (h < 12) return 'red'; if (h < 38) return 'orange'; if (h < 68) return 'yellow'; if (h < 95) return 'yellow-green';
+  if (h < 160) return 'green'; if (h < 205) return 'blue-green'; if (h < 255) return 'blue'; if (h < 335) return 'violet';
+  if (h < 350) return 'red-violet'; return 'red';
+}
+function bandName(l) {
+  if (l < 380) return 'ultraviolet'; if (l < 435) return 'violet'; if (l < 480) return 'blue'; if (l < 510) return 'blue-green';
+  if (l < 560) return 'green'; if (l < 580) return 'yellow-green'; if (l < 595) return 'yellow'; if (l < 620) return 'orange';
+  if (l <= 750) return 'red'; return 'infrared';
+}
+const visible = l => l >= 380 && l <= 750;
+const absCss = l => visible(l) ? `hsl(${hueOf(wl(l)).h.toFixed(0)}, 48%, 55%)` : '#9a948a';
+const PAPER = [243, 240, 232];
+const rgbP = (c, k = 0.25, a = 1) => `rgba(${c.map((v, i) => Math.round(v * 255 * (1 - k) + PAPER[i] * k)).join(',')},${a})`;
+
+// ------------------------------------------------------------ geometry
+const CX = 330, CY = 420;                            // complex centre
+const AX = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+const PERP = [[0, 1, 0], [0, 1, 0], [0, 0, 1], [0, 0, 1], [1, 0, 0], [1, 0, 0]];
+function proj(v, yaw, tilt = 0.38) {
+  const [x, y, z] = v;
+  const x1 = x * Math.cos(yaw) + z * Math.sin(yaw), z1 = -x * Math.sin(yaw) + z * Math.cos(yaw);
+  const y2 = y * Math.cos(tilt) - z1 * Math.sin(tilt), z2 = y * Math.sin(tilt) + z1 * Math.cos(tilt);
+  return [CX + x1, CY - y2, z2];
+}
+const WX = 780, WY = 390, R1 = 60, R2 = 104;         // colour wheel
+const BAND_Y0 = 742, BAND_Y1 = 778;                  // light path
+const CUV = { x0: 500, x1: 580, y0: 660, y1: 860, liq: 690 };
+const SCREEN_X = 925;
+
+let vA = { energy: 1, spectrum: 0, working: 0 };
+
+// ------------------------------------------------------------ drawing: complex
+function drawComplexSketch(d, yaw) {
+  const c = proj([0, 0, 0], yaw);
+  AX.forEach((a, i) => {
+    const e = proj(a.map(v => v * (d + 70)), yaw);
+    sk([[c[0], c[1]], [e[0], e[1]]], 1300 + i, P(0.4 + i * 0.1, 1.2 + i * 0.1), { w: 1.1, color: GRAY, dash: [6, 8], single: true });
+  });
+  sk(ellipsePts(c[0], c[1], 34, 34, 20), 1310, P(1.2, 1.7), { w: 1.8 });
+  hand('Ti³⁺', c[0], c[1] + 9, { size: 26, align: 'center', prog: P(1.5, 1.9) });
+  AX.forEach((a, i) => {
+    const o = proj(a.map(v => v * d), yaw), p = P(1.6 + i * 0.15, 2.1 + i * 0.15);
+    sk(ellipsePts(o[0], o[1], 22, 22, 16), 1320 + i * 3, p, { w: 1.6 });
+    const inner = proj(a.map(v => v * 36), yaw), outer = proj(a.map(v => v * (d - 22)), yaw);
+    sk([[inner[0], inner[1]], [outer[0], outer[1]]], 1340 + i, P(2.4 + i * 0.08, 2.9 + i * 0.08), { w: 1.4 });
+    if (p >= 1) hand('O', o[0], o[1] + 7, { size: 20, align: 'center' });
+  });
+}
+function drawComplexModel(d, yaw, bondA, lobesA) {
+  const c = proj([0, 0, 0], yaw);
+  softEllipse(CX + 30, 690, 170, 18, 0.14);
+  if (lobesA > 0) {                                  // e_g lobes point AT the ligands, t₂g lobes point BETWEEN them
+    const b = ctx.globalAlpha;
+    const lobe = (v, col) => {
+      for (const sgnv of [1, -1]) {
+        const p = proj(v.map(x => x * 70 * sgnv), yaw), dx = p[0] - c[0], dy = p[1] - c[1];
+        ctx.save(); ctx.translate(c[0] + dx * 0.95, c[1] + dy * 0.95); ctx.rotate(Math.atan2(dy, dx));
+        ctx.globalAlpha = b * lobesA; ctx.fillStyle = col;
+        ctx.beginPath(); ctx.ellipse(0, 0, Math.max(26, Math.hypot(dx, dy) * 0.7), 24, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+    };
+    lobe([1, 0, 0], 'rgba(192,105,46,0.30)'); lobe([0, 1, 0], 'rgba(192,105,46,0.30)');
+    lobe([0.707, 0, 0.707], 'rgba(61,95,158,0.26)'); lobe([0.707, 0, -0.707], 'rgba(61,95,158,0.26)');
+    ctx.globalAlpha = b;
+  }
+  const items = [{ z: c[2], f: () => sphere(c[0], c[1], 34, '#9a8fb3', null, { shadow: false }) }];
+  AX.forEach((a, i) => {
+    const o = proj(a.map(v => v * d), yaw), hp = PERP[i];
+    const h1 = proj(a.map((v, k) => v * (d + 18) + hp[k] * 20), yaw), h2 = proj(a.map((v, k) => v * (d + 18) - hp[k] * 20), yaw);
+    if (bondA > 0) items.push({ z: (o[2] + c[2]) / 2 - 1, f: () => {
+      const b = ctx.globalAlpha; ctx.globalAlpha = b * bondA; ctx.lineCap = 'round';
+      ctx.strokeStyle = '#8d857a'; ctx.lineWidth = 9; ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(o[0], o[1]); ctx.stroke();
+      ctx.strokeStyle = '#b9b1a4'; ctx.lineWidth = 3; ctx.stroke(); ctx.globalAlpha = b;
+    } });
+    items.push({ z: h1[2], f: () => sphere(h1[0], h1[1], 12, '#ece8e0', null, { shadow: false }) });
+    items.push({ z: h2[2], f: () => sphere(h2[0], h2[1], 12, '#ece8e0', null, { shadow: false }) });
+    items.push({ z: o[2], f: () => sphere(o[0], o[1], 23, '#c46a5a', 'O', { shadow: false, labelColor: '#fff', labelSize: 12 }) });
+  });
+  items.sort((a, b) => a.z - b.z).forEach(it => it.f());
+  // metal label drawn last so front bonds never hide it
+  ctx.font = `700 15px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(154,143,179,0.9)'; ctx.strokeText('Ti³⁺', c[0], c[1] + 1);
+  ctx.fillStyle = '#1f1b17'; ctx.fillText('Ti³⁺', c[0], c[1] + 1);
+}
+
+// ------------------------------------------------------------ drawing: light path, cuvette, wheel
+function drawBenchSketch(la) {
+  const lp = P(2.8, 3.2);
+  sk([[52, 730], [118, 730], [118, 790], [52, 790], [52, 730]], 1401, lp, { w: 1.8 });
+  sk([[72, 790], [72, 850], [40, 856], [104, 856]], 1403, lp, { w: 1.6 });
+  const cp = P(3.0, 3.6);
+  sk([[CUV.x0, CUV.y0], [CUV.x0, CUV.y1], [CUV.x1, CUV.y1], [CUV.x1, CUV.y0]], 1405, cp, { w: 1.9 });
+  sk([[CUV.x0 + 3, CUV.liq], [CUV.x1 - 3, CUV.liq]], 1407, cp, { w: 1.3 });
+  hatch(() => { ctx.beginPath(); ctx.rect(CUV.x0, CUV.liq, CUV.x1 - CUV.x0, CUV.y1 - CUV.liq); }, CUV.x0, CUV.liq, CUV.x1, CUV.y1, 12, 1409, cp, 0.28);
+  const bp = P(3.4, 3.9);
+  sk([[122, BAND_Y0], [CUV.x0 - 4, BAND_Y0]], 1411, bp, { w: 1.1, dash: [8, 8], single: true });
+  sk([[122, BAND_Y1], [CUV.x0 - 4, BAND_Y1]], 1413, bp, { w: 1.1, dash: [8, 8], single: true });
+  sk([[CUV.x1 + 4, BAND_Y0], [SCREEN_X, 680]], 1415, bp, { w: 1.1, dash: [8, 8], single: true });
+  sk([[CUV.x1 + 4, BAND_Y1], [SCREEN_X, 850]], 1417, bp, { w: 1.1, dash: [8, 8], single: true });
+  sk([[SCREEN_X, 672], [SCREEN_X + 16, 672], [SCREEN_X + 16, 858], [SCREEN_X, 858], [SCREEN_X, 672]], 1419, bp, { w: 1.6 });
+  const wp = P(3.2, 4.0);
+  sk(ellipsePts(WX, WY, R2, R2, 34), 1421, wp, { w: 1.7 });
+  sk(ellipsePts(WX, WY, R1, R1, 26), 1423, wp, { w: 1.4 });
+  const spk = P(3.8, 4.4);
+  for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3 - Math.PI / 2; sk([[WX + Math.cos(a) * R1, WY + Math.sin(a) * R1], [WX + Math.cos(a) * R2, WY + Math.sin(a) * R2]], 1430 + i, spk, { w: 1.1, single: true }); }
+}
+function drawLight(st, la) {
+  const light = st.light;
+  if (light <= 0) return;
+  const b = ctx.globalAlpha;
+  // white beam: a soft painted cream band (no glow)
+  for (let k = 0; k < 3; k++) {
+    ctx.fillStyle = `rgba(255,246,220,${(0.5 - k * 0.14) * light})`;
+    ctx.fillRect(118, BAND_Y0 - k * 3, CUV.x1 - 118, BAND_Y1 - BAND_Y0 + k * 6);
+  }
+  // after the sample the light is spread into a spectrum on the screen; absorbed colours fade out
+  const N = 64;
+  for (let i = 0; i < N; i++) {
+    const l = 380 + (i + 0.5) * 370 / N, T = 1 - st.ab * absorbAt(l, la);
+    ctx.fillStyle = rgbP(wl(l), 0.38, 0.45 * light * T);
+    const ya = BAND_Y0 + i / N * (BAND_Y1 - BAND_Y0), yb = BAND_Y0 + (i + 1) / N * (BAND_Y1 - BAND_Y0);
+    const yc = 680 + i / N * 170, yd = 680 + (i + 1) / N * 170;
+    ctx.beginPath(); ctx.moveTo(CUV.x1, ya); ctx.lineTo(SCREEN_X, yc); ctx.lineTo(SCREEN_X, yd + 0.6); ctx.lineTo(CUV.x1, yb + 0.6); ctx.closePath(); ctx.fill();
+  }
+  ctx.globalAlpha = b * light;
+  hand('white light', 300, 812, { size: 22, color: GRAY, align: 'center' });
+  hand('screen', SCREEN_X + 8, 660, { size: 20, color: GRAY, align: 'center' });
+  ctx.globalAlpha = b;
+}
+function drawBenchModel(st, la) {
+  const seen = seenOf(la);
+  softEllipse(80, 860, 50, 9, 0.22); softEllipse(CUV.x0 + 45, CUV.y1 + 6, 60, 9, 0.24); softEllipse(SCREEN_X + 12, 862, 26, 6, 0.2);
+  // lamp
+  ctx.fillStyle = '#5b5750'; ctx.fillRect(69, 788, 7, 64);
+  ctx.beginPath(); ctx.ellipse(72, 855, 34, 8, 0, 0, Math.PI * 2); ctx.fill();
+  const lg = ctx.createLinearGradient(0, 730, 0, 790); lg.addColorStop(0, '#6d685f'); lg.addColorStop(1, '#45413b');
+  ctx.fillStyle = lg; ctx.beginPath(); ctx.roundRect(52, 730, 66, 60, 10); ctx.fill();
+  ctx.fillStyle = '#f4ecd6'; ctx.beginPath(); ctx.ellipse(116, 760, 6, 22, 0, 0, Math.PI * 2); ctx.fill();
+  drawLight(st, la);
+  // cuvette with the complex solution
+  ctx.fillStyle = 'rgba(225,238,244,0.25)'; ctx.beginPath(); ctx.roundRect(CUV.x0, CUV.y0, CUV.x1 - CUV.x0, CUV.y1 - CUV.y0, [3, 3, 10, 10]); ctx.fill();
+  ctx.globalAlpha *= 0.8; ctx.fillStyle = seen.css; ctx.beginPath(); ctx.roundRect(CUV.x0 + 4, CUV.liq, CUV.x1 - CUV.x0 - 8, CUV.y1 - CUV.liq - 4, [0, 0, 8, 8]); ctx.fill(); ctx.globalAlpha /= 0.8;
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(CUV.x0 + 5, CUV.liq); ctx.lineTo(CUV.x1 - 5, CUV.liq); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fillRect(CUV.x0 + 9, CUV.y0 + 14, 8, CUV.y1 - CUV.y0 - 30);
+  ctx.strokeStyle = 'rgba(95,115,125,0.6)'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.roundRect(CUV.x0, CUV.y0, CUV.x1 - CUV.x0, CUV.y1 - CUV.y0, [3, 3, 10, 10]); ctx.stroke();
+  // screen card
+  ctx.fillStyle = '#fbf8f1'; ctx.strokeStyle = '#d8d0c2'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.rect(SCREEN_X, 672, 16, 186); ctx.fill(); ctx.stroke();
+}
+function drawPhoton(pp, la, a = 1) {
+  if (pp <= 0 || a <= 0) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  if (pp < 1) {
+    const px = lerp(130, CUV.x0 + 36, pp);
+    ctx.beginPath();
+    for (let i = 0; i <= 24; i++) { const x = px - 56 + i * 2.4, y = 760 + Math.sin(i * 0.8 - pp * 30) * 7; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.strokeStyle = absCss(la); ctx.lineWidth = 3.2; ctx.lineCap = 'round'; ctx.stroke();
+    ctx.fillStyle = absCss(la); ctx.beginPath(); ctx.moveTo(px + 4, 760); ctx.lineTo(px - 8, 753); ctx.lineTo(px - 8, 767); ctx.closePath(); ctx.fill();
+  } else ringFx(CUV.x0 + 40, 760, clamp01((pp - 1) * 2.5), absCss(la), 26);
+  ctx.globalAlpha = b;
+}
+const wpos = (h, r) => { const a = (h - 90) * Math.PI / 180; return [WX + Math.cos(a) * r, WY + Math.sin(a) * r]; };
+function drawWheelModel(la, markA) {
+  const b = ctx.globalAlpha, seen = seenOf(la);
+  softEllipse(WX + 16, WY + R2 + 12, R2 * 0.9, 12, 0.16);
+  for (let i = 0; i < 72; i++) {
+    const a0 = (i * 5 - 90) * Math.PI / 180, a1 = ((i + 1) * 5 - 90 + 0.6) * Math.PI / 180;
+    ctx.fillStyle = `hsl(${i * 5}, 40%, 66%)`;
+    ctx.beginPath(); ctx.arc(WX, WY, R2, a0, a1); ctx.arc(WX, WY, R1, a1, a0, true); ctx.closePath(); ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(80,70,60,0.35)'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(WX, WY, R2, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.arc(WX, WY, R1, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = seen.css; ctx.beginPath(); ctx.arc(WX, WY, 40, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = b;
+}
+function drawWheelMarks(la, markA) {
+  if (markA <= 0) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * markA;
+  const seen = seenOf(la);
+  if (visible(la)) {
+    const ha = hueOf(wl(la)).h, [ax, ay] = wpos(ha, R2 + 8);
+    ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(ax, ay, 6, 0, Math.PI * 2); ctx.fill();
+    const [lx, ly] = wpos(ha, R2 + 30), right = lx >= WX;
+    hand('absorbed', lx, ly, { size: 22, color: GRAY, align: right ? 'left' : 'right' });
+    hand(bandName(la), lx, ly + 24, { size: 26, color: INK, align: right ? 'left' : 'right' });
+    if (seen.s >= 0.1) {
+      const [p0x, p0y] = wpos(ha, R1 - 6), [p1x, p1y] = wpos(seen.h, R1 - 6);
+      arrowSk(p0x, p0y, p1x, p1y, 1441, 1, ORANGE, 0.12);
+    }
+  }
+  if (seen.s >= 0.1) {
+    const [sx, sy] = wpos(seen.h, R2 + 8);
+    ctx.strokeStyle = ORANGE; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2); ctx.stroke();
+  }
+  hand(seen.s < 0.1 ? 'looks colourless' : `looks ${seen.name}`, WX, WY + R2 + 82, { size: 32, color: ORANGE, align: 'center', weight: 700 });
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ notebook views
+function drawEnergy(a, st, e) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('d-orbital energies', 1070, 205, { size: 40, prog: P(11.6, 12.4) });
+  const ax = P(11.9, 12.5);
+  sk([[1080, 840], [1080, 250]], 1101, ax, { w: 1.6 });
+  if (ax >= 1) { sk([[1072, 264], [1080, 250], [1088, 264]], 1103, 1, { w: 1.6, single: true }); hand('energy', 1094, 266, { size: 22, color: GRAY }); }
+  const D = st.delta * st.ap, k = 0.95, yB = 540, yE = yB - 0.6 * D * k, yT = yB + 0.4 * D * k;
+  const lp = P(12.4, 13.2), rp = P(13.0, 13.8);
+  for (let i = 0; i < 5; i++) sk([[1105 + i * 26, yB], [1125 + i * 26, yB]], 1110 + i, lp, { w: 4 });
+  hand('free ion', 1160, yB + 40, { size: 22, color: GRAY, align: 'center', prog: lp });
+  hand('5 equal d-orbitals', 1160, yB + 64, { size: 19, color: GRAY, align: 'center', prog: lp });
+  const EG = '#b8612f', T2 = '#3d5f9e';
+  sk([[1320, yE], [1362, yE]], 1120, rp, { w: 4, color: EG }); sk([[1372, yE], [1414, yE]], 1121, rp, { w: 4, color: EG });
+  sk([[1310, yT], [1346, yT]], 1122, rp, { w: 4, color: T2 }); sk([[1352, yT], [1388, yT]], 1123, rp, { w: 4, color: T2 }); sk([[1394, yT], [1430, yT]], 1124, rp, { w: 4, color: T2 });
+  if (rp >= 1) {
+    sk([[1232, yB], [1316, yE]], 1125, 1, { w: 1, color: GRAY, dash: [5, 6], single: true });
+    sk([[1232, yB], [1306, yT]], 1126, 1, { w: 1, color: GRAY, dash: [5, 6], single: true });
+    hand('eg', 1440, yE + 8, { size: 28, color: EG });
+    hand('t₂g', 1440, yT + 8, { size: 28, color: T2 });
+    if (D > 30) {
+      sk([[1300, yB], [1436, yB]], 1127, 1, { w: 1, color: GRAY, dash: [3, 6], single: true });
+      hand('+0.6 Δₒ', 1272, (yB + yE) / 2 - 4, { size: 19, color: GRAY, align: 'center' });
+      hand('−0.4 Δₒ', 1272, (yB + yT) / 2 + 20, { size: 19, color: GRAY, align: 'center' });
+      sk([[1500, yE], [1500, yT]], 1128, 1, { w: 2, color: ORANGE });
+      sk([[1492, yE], [1508, yE]], 1129, 1, { w: 2, color: ORANGE, single: true });
+      sk([[1492, yT], [1508, yT]], 1130, 1, { w: 2, color: ORANGE, single: true });
+      hand('Δₒ', 1512, (yE + yT) / 2 + 9, { size: 30, color: ORANGE });
+    }
+    if (st.ap > 0.98) hand(`Δₒ = ${st.delta.toFixed(0)} kJ mol⁻¹   →   λ = ${lamOf(st.delta).toFixed(0)} nm`, 1105, 800, { size: 28, color: ORANGE });
+  }
+  const ep = P(13.8, 14.3);
+  if (ep > 0) {
+    const x = lerp(1328, 1341, e), y = lerp(yT, yE, e) - 11 - Math.sin(Math.PI * e) * 26;
+    const bb = ctx.globalAlpha; ctx.globalAlpha = bb * ep; bead(x, y, 10, 'e'); ctx.globalAlpha = bb;
+    if (e > 0.05 && e < 0.999) hand('hν', 1296, (yE + yT) / 2, { size: 28, color: ORANGE, align: 'right' });
+    if (e >= 0.999) hand('excited: t₂g⁰ eg¹', 1105, 290, { size: 22, color: ORANGE });
+  }
+  ctx.globalAlpha = b;
+}
+function drawSpectrum(a, st) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const la = lamOf(st.delta), seen = seenOf(la);
+  hand('what the solution absorbs', 1070, 205, { size: 40 });
+  const { X, Y } = sketchAxes({ x0: 1110, y0: 290, x1: 1500, y1: 680 }, { xmin: 380, xmax: 750, ymin: 0, ymax: 1.1 },
+    { xlabel: 'λ (nm)', ylabel: 'absorbance', xticks: [400, 500, 600, 700], seed: 1201 });
+  const pts = []; for (let l = 380; l <= 750; l += 5) pts.push([X(l), Y(absorbAt(l, la))]);
+  sk(pts, 1203, 1, { w: 2.2, amp: 0.5 });
+  if (visible(la)) {
+    sk([[X(la), Y(0)], [X(la), Y(absorbAt(la, la))]], 1205, 1, { w: 1.2, color: ORANGE, dash: [4, 6], single: true });
+    hand(`${la.toFixed(0)} nm`, X(la), Y(absorbAt(la, la)) - 14, { size: 26, color: ORANGE, align: 'center' });
+  } else hand(la < 380 ? '← peak is in the UV' : 'peak is in the IR →', la < 380 ? 1120 : 1490, 330, { size: 24, color: ORANGE, align: la < 380 ? 'left' : 'right' });
+  for (let l = 380; l < 750; l += 2) {
+    ctx.fillStyle = rgbP(wl(l), 0.2); ctx.fillRect(X(l), 760, X(l + 2) - X(l) + 0.6, 22);
+    const T = 1 - absorbAt(l, la);
+    ctx.fillStyle = rgbP(wl(l).map(v => v * T + 0.84 * (1 - T)), 0.2); ctx.fillRect(X(l), 800, X(l + 2) - X(l) + 0.6, 22);
+  }
+  hand('in', 1100, 778, { size: 22, color: GRAY, align: 'right' });
+  hand('out', 1100, 818, { size: 22, color: GRAY, align: 'right' });
+  ctx.fillStyle = absCss(la); ctx.beginPath(); ctx.arc(1122, 870, 13, 0, Math.PI * 2); ctx.fill();
+  hand(`absorbed: ${bandName(la)}`, 1144, 878, { size: 26 });
+  ctx.fillStyle = seen.css; ctx.beginPath(); ctx.arc(1122, 915, 13, 0, Math.PI * 2); ctx.fill();
+  hand(`seen: ${seen.name}`, 1144, 923, { size: 26, color: ORANGE });
+  ctx.globalAlpha = b;
+}
+function drawWorking(a, st) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const la = lamOf(st.delta), E1 = H * CL / (la * 1e-9), Dj = E1 * NA, X = 1070, sz = 31;
+  hand('one photon:  E = hc / λ', X, 215, { size: sz, prog: P(34.0, 34.8) });
+  hand(`   = (6.626×10⁻³⁴ × 3.0×10⁸) / (${la.toFixed(0)}×10⁻⁹)`, X, 262, { size: 28, prog: P(34.8, 35.8) });
+  hand(`   = ${sci(E1, 3)} J`, X, 308, { size: sz, prog: P(35.8, 36.4) });
+  hand("per mole:  Δₒ = E × Avogadro's number", X, 372, { size: sz, prog: P(36.5, 37.3) });
+  hand(`   = ${sci(E1, 3)} × 6.022×10²³`, X, 418, { size: sz, prog: P(37.3, 38.0) });
+  hand(`   = ${sci(Dj, 3)} J mol⁻¹`, X, 464, { size: sz, prog: P(38.0, 38.5) });
+  const fin = P(38.6, 39.1);
+  if (fin > 0) {
+    const w = hand(`Δₒ ≈ ${(Dj / 1000).toFixed(0)} kJ mol⁻¹`, X + 20, 555, { size: 48, color: ORANGE, prog: fin, weight: 700 });
+    const cp = P(38.9, 39.5);
+    if (cp > 0) sk(ellipsePts(X + 20 + w / 2, 540, w / 2 + 26, 38, 30, -2.2, -2.2 + Math.PI * 2.15), 1210, cp, { w: 2.2, color: ORANGE });
+  }
+  const np = P(39.3, 39.9);
+  hand('Ti³⁺ is d¹:  t₂g¹  →  eg¹  (one electron jumps)', X, 650, { size: 25, color: GRAY, prog: np });
+  const seen = seenOf(la);
+  hand(`absorbs ${bandName(la)}  →  we see ${seen.name}`, X, 688, { size: 25, color: GRAY, prog: np });
+  ctx.globalAlpha = b;
+}
+function drawSeries(a, idx) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('spectrochemical series   (weak field  →  strong field)', 70, 900, { size: 23, color: GRAY });
+  let x = 70; const xs = [];
+  LIG_ORDER.forEach((k, i) => {
+    const w = hand(LIG_LABEL[k], x, 940, { size: 30, color: INK });
+    xs.push([x, w]); x += w;
+    if (i < 7) { hand('<', x + 12, 940, { size: 26, color: GRAY }); x += 38; }
+  });
+  const i = clamp(Math.floor(idx), 0, 7), f = clamp01(idx - i), a0 = xs[i], a1 = xs[Math.min(7, i + 1)];
+  const mx = lerp(a0[0] + a0[1] / 2, a1[0] + a1[1] / 2, f), mw = lerp(a0[1], a1[1], f);
+  sk(ellipsePts(mx, 930, mw / 2 + 14, 22, 26, -2.3, -2.3 + Math.PI * 2.1), 1500 + Math.round(idx * 3), 1, { w: 2, color: ORANGE, single: true });
+  hand('(values other than H₂O are illustrative)', 70, 978, { size: 19, color: GRAY });
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ tour notes
+function note(t, t0, t1, tOut, fn) {
+  if (t < t0 || t > tOut + 0.6) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * (1 - S(t, tOut, tOut + 0.6));
+  fn(Lr(t, t0, t1)); ctx.globalAlpha = b;
+}
+function drawTourNotes(t, yaw, d) {
+  const lx = proj([d, 0, 0], yaw);
+  note(t, 4.9, 5.5, 10.5, p => { hand('six H₂O ligands', 640, 600, { size: 30, color: ORANGE, align: 'center', prog: p }); arrowSk(600, 610, lx[0] + 24, lx[1] + 14, 1601, p); });
+  note(t, 5.1, 5.6, 10.5, p => { hand('cuvette of the solution', 690, 700, { size: 28, color: ORANGE, prog: p }); arrowSk(686, 706, CUV.x1 + 8, 725, 1603, p); });
+  note(t, 5.3, 5.8, 10.5, p => hand('colour wheel', WX, WY - R2 - 20, { size: 28, color: ORANGE, align: 'center', prog: p }));
+  note(t, 7.4, 8.2, 10.6, p => hand('Ti³⁺ = [Ar] 3d¹ : just one d-electron', 560, 212, { size: 30, color: ORANGE, prog: p }));
+  note(t, 11.8, 12.6, 18.4, p => hand('ligands close in along x, y and z', 560, 600, { size: 28, color: ORANGE, prog: p }));
+  note(t, 15.0, 15.9, 18.6, p => hand('eg lobes point AT the ligands  →  pushed up', 1080, 880, { size: 25, color: '#b8612f', prog: p }));
+  note(t, 16.2, 17.1, 18.6, p => hand('t₂g lobes point BETWEEN them  →  drop down', 1080, 915, { size: 25, color: '#3d5f9e', prog: p }));
+  note(t, 20.6, 21.6, 26.6, p => hand('this photon (498 nm) has exactly Δₒ', 300, 640, { size: 26, color: ORANGE, align: 'center', prog: p }));
+  note(t, 23.4, 24.2, 26.6, p => hand('blue-green is missing', 960, 895, { size: 26, color: ORANGE, align: 'center', prog: p }));
+  note(t, 25.8, 26.4, 26.8, p => hand('energy lost as heat', 1105, 330, { size: 22, color: GRAY, prog: p }));
+  note(t, 29.6, 30.4, 32.6, p => hand('red + violet light pass through', WX, 622, { size: 26, color: GRAY, align: 'center', prog: p }));
+  note(t, 41.0, 41.9, 47.8, p => hand('stronger ligand  →  bigger Δₒ  →  shorter λ', 1080, 880, { size: 26, color: ORANGE, prog: p }));
+  note(t, 48.3, 49.2, 60, p => { hand('your turn', 1380, 950, { size: 54, color: ORANGE, prog: p, weight: 700, align: 'center' }); arrowSk(1470, 935, 1580, 910, 1609, p); });
+}
+
+// ------------------------------------------------------------ lesson config
+Studio.lesson({
+  id: 'crystal-field',
+  unit: 'Unit 5 · Coordination Compounds',
+  title: 'Crystal Field Colour',
+  headline: '[Ti(H₂O)₆]³⁺ · Δₒ',
+  panelEyebrow: 'Crystal field lab',
+  intro: 'Why is a titanium(III) solution violet? Watch six water molecules split the d-orbitals, one photon lift one electron, and the missing colour paint the solution.',
+  welcome: { title: 'Where does the colour come from?', text: 'Press Play the tour for a 50-second guided story, or jump straight into the lab.', formula: 'Δₒ = N_A · hc / λ' },
+  problem: {
+    html: 'Calculate Δₒ (kJ mol⁻¹) for<span class="cell">[Ti(H₂O)₆]³⁺ · absorbs λ = 498 nm</span>and explain why it looks violet. h = 6.626×10⁻³⁴ J s, c = 3.0×10⁸ m s⁻¹, N<sub>A</sub> = 6.022×10²³ mol⁻¹',
+    answer: 'Δₒ = N<sub>A</sub>hc/λ ≈ 2.40×10⁵ J mol⁻¹ ≈ 240 kJ mol⁻¹; it absorbs blue-green, so we see violet', revealAt: 39.0, revealChapter: 'SOLVE',
+  },
+  tourEnd: 51,
+  introT: 6,
+  chapters: [
+    { t: 0, key: 'SKETCH', title: 'A complex on paper', text: 'The complex [Ti(H₂O)₆]³⁺: a Ti³⁺ ion with six water molecules around it, one at each end of the x, y and z axes. This shape is an octahedron.', formula: '[Ti(H₂O)₆]³⁺ · octahedral' },
+    { t: 6, key: 'BUILD', title: 'One d-electron', text: 'Titanium(III) has just one d-electron. In a free ion all five d-orbitals have exactly the same energy, so the electron could sit in any of them.', formula: 'Ti³⁺ = [Ar] 3d¹' },
+    { t: 11, key: 'APPROACH', title: 'Ligands split the d-orbitals', text: 'As the six water ligands close in along the axes, the two orbitals that point straight at them (eg) are repelled and rise. The three that point between the axes (t₂g) drop. The gap between them is the crystal field splitting, Δₒ.', formula: 'eg: +0.6 Δₒ   ·   t₂g: −0.4 Δₒ' },
+    { t: 19, key: 'ABSORB', title: 'Light lifts the electron', text: 'White light shines through the solution. A photon whose energy exactly equals Δₒ is absorbed and lifts the electron from t₂g to eg. For this complex that photon has λ = 498 nm (blue-green), so that slice goes missing from the light.', formula: 'E(photon) = hc / λ = Δₒ' },
+    { t: 27, key: 'COLOUR', title: 'We see what is left', text: 'Take blue-green out of white light and the remaining red and violet light reaches your eye. That is why the solution looks violet: the colour we see is complementary to the colour absorbed.', formula: 'absorbed: blue-green (498 nm)  →  seen: violet' },
+    { t: 33, key: 'SOLVE', title: 'Now the class problem', text: 'Energy of one photon: E = hc/λ = (6.626×10⁻³⁴)(3.0×10⁸)/(498×10⁻⁹) = 3.99×10⁻¹⁹ J. For one mole of ions multiply by Avogadro\'s number: Δₒ = 2.40×10⁵ J mol⁻¹ ≈ 240 kJ mol⁻¹.', formula: 'Δₒ = N_A · hc / λ ≈ 240 kJ mol⁻¹' },
+    { t: 40, key: 'LIGANDS', title: 'Different ligands, different colours', text: 'Ligands differ in how strongly they split the d-orbitals: the spectrochemical series. A stronger-field ligand gives a bigger Δₒ, so the absorbed photon has a shorter wavelength and the colour changes. (Values for ligands other than H₂O are illustrative.)', formula: 'I⁻ < Br⁻ < Cl⁻ < F⁻ < H₂O < NH₃ < en < CN⁻' },
+    { t: 48, key: 'YOUR TURN', title: 'Your turn', text: 'Pick a ligand, drag Δₒ, shine a photon, switch notebook views and try the four challenges.', formula: '' },
+  ],
+  camera: [[0, 800, 500, 1], [6, 800, 500, 1], [8, 380, 430, 1.45], [11, 380, 430, 1.45], [12.5, 800, 500, 1], [19, 800, 500, 1],
+    [20.3, 600, 660, 1.3], [22.0, 600, 660, 1.3], [23.2, 900, 560, 1.05], [27, 900, 560, 1.05], [28.5, 1000, 470, 1.2], [33, 1000, 470, 1.2],
+    [34.5, 1270, 470, 1.45], [39.8, 1270, 470, 1.45], [41, 800, 510, 1], [99, 800, 510, 1]],
+  tourState(t) {
+    let idx = 4;
+    if (t >= 40.8) idx = t < 42.8 ? lerp(4, 0, S(t, 40.8, 42.8)) : t < 46.5 ? lerp(0, 7, S(t, 42.8, 46.2)) : lerp(7, 4, S(t, 46.5, 47.8));
+    return {
+      delta: idx === 4 ? D_H2O : deltaAtIdx(idx), idx, ap: S(t, 11.5, 15), m: S(t, 6.5, 9.5),
+      light: S(t, 19.5, 20.3), ab: S(t, 22.4, 23.2), pp: t < 20.8 ? 0 : t < 22.3 ? Lr(t, 20.8, 22.3) : t < 22.8 ? 1 + Lr(t, 22.3, 22.7) : 0,
+      e: S(t, 22.3, 23.1) * (1 - S(t, 26, 26.8)), lobes: S(t, 14.5, 15.2) * (1 - S(t, 18.4, 19)),
+      mark: S(t, 27.5, 28.3), series: S(t, 40.3, 41),
+      views: { energy: S(t, 11.3, 12) * (1 - S(t, 26.6, 27.2)) + S(t, 40.2, 41), spectrum: S(t, 27.2, 28) * (1 - S(t, 32.6, 33.2)), working: S(t, 33.2, 34) * (1 - S(t, 39.6, 40.2)) },
+    };
+  },
+  initLab: () => ({ lig: 'H2O', delta: D_H2O, m: 1, view: 'energy', spectrum: true, slow: false, shot: -1 }),
+  step(lab, dt) { if (lab.shot >= 0) { lab.shot += dt; if (lab.shot > 4.6) lab.shot = -1; } },
+  labState(lab) {
+    const s = lab.shot;
+    return {
+      delta: lab.delta, idx: idxOfDelta(lab.delta), ap: 1, m: lab.m, light: lab.spectrum ? 1 : 0, ab: 1,
+      pp: s < 0 ? 0 : s < 1.2 ? s / 1.2 : s < 1.6 ? 1 + (s - 1.2) / 0.4 : 0,
+      e: s < 0 ? 0 : S(s, 1.2, 1.8) * (1 - S(s, 3.4, 4.2)), lobes: 0, mark: 1, series: 1, views: null,
+    };
+  },
+  draw(env) {
+    ctx = env.ctx; TT = env.TT; P = env.P;
+    const lab = env.mode === 'lab' ? env.lab : null, st = env.st;
+    if (lab) for (const v in vA) vA[v] = env.snap ? (v === lab.view ? 1 : 0) : lerp(vA[v], v === lab.view ? 1 : 0, 1 - Math.exp(-env.rawDt * 7));
+    const views = lab ? vA : st.views, m = st.m, la = lamOf(st.delta);
+    const yaw = TT === null ? 0.6 + env.clock * 0.2 : 0.6 + Math.max(0, TT - 6) * 0.2;
+    const d = lerp(260, 150, st.ap);
+
+    hand('Crystal field splitting', 60, 100, { size: 50, prog: P(3.8, 4.8), weight: 700 });
+    hand('[Ti(H₂O)₆]³⁺ · d¹ · octahedral', 62, 140, { size: 28, color: GRAY, prog: P(4.4, 5.2) });
+
+    ctx.globalAlpha = 1 - 0.82 * m;
+    drawComplexSketch(d, yaw); drawBenchSketch(la);
+    ctx.globalAlpha = 1;
+    const tipAfterSketch = Studio.pencilTip;
+    if (m > 0) {
+      ctx.globalAlpha = m;
+      drawComplexModel(d, yaw, S(st.ap, 0.55, 1), st.lobes);
+      drawBenchModel(st, la);
+      drawWheelModel(la, st.mark);
+      ctx.globalAlpha = 1;
+    }
+    drawPhoton(st.pp, la);
+    drawWheelMarks(la, st.mark);
+    drawEnergy(views.energy, st, st.e);
+    drawSpectrum(views.spectrum, st);
+    drawWorking(views.working, st);
+    drawSeries(st.series, st.idx);
+    if (env.mode === 'tour') drawTourNotes(TT, yaw, d);
+    if (lab) hand(lab.shot >= 0 ? 'photon fired: watch the electron in Energy levels' : 'press "Shine a photon" to fire one photon of energy Δₒ', 62, 182, { size: 23, color: ORANGE });
+    Studio.pencilTip = tipAfterSketch || Studio.pencilTip;
+  },
+  stats: [{ id: 'D', label: 'Δₒ' }, { id: 'L', label: 'λ ABS.' }, { id: 'E', label: 'PHOTON' }, { id: 'C', label: 'SEEN' }],
+  statValues(st) {
+    const la = lamOf(st.delta), seen = seenOf(la);
+    return {
+      D: `${st.delta.toFixed(0)}<small>kJ</small>`, L: `${la.toFixed(0)}<small>nm</small>`, E: `${(1239.84 / la).toFixed(2)}<small>eV</small>`,
+      C: `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${seen.css};margin-right:4px;vertical-align:1px"></span><span style="font-size:11px">${seen.name}</span>`,
+    };
+  },
+  now(st, lab) {
+    const la = lamOf(st.delta), seen = seenOf(la), d = st.delta.toFixed(0);
+    let title, text;
+    if (visible(la)) {
+      title = `Absorbs ${bandName(la)} light (${la.toFixed(0)} nm)`;
+      text = `With Δₒ = ${d} kJ mol⁻¹, only photons of about ${la.toFixed(0)} nm carry the right energy to lift the electron from t₂g to eg. Remove ${bandName(la)} from white light and what is left looks <b>${seen.name}</b>.`;
+    } else {
+      title = la < 380 ? 'Absorbs in the ultraviolet' : 'Absorbs in the infrared';
+      text = `The gap is ${la < 380 ? 'bigger' : 'smaller'} than the energy of any visible photon, so the absorbed light is invisible. Visible light passes almost untouched and the solution looks ${seen.s < 0.1 ? 'nearly colourless' : 'only faintly ' + seen.name}.`;
+    }
+    if (lab.lig) text += ` ${LIG_LABEL[lab.lig]} sits ${LIG_ORDER.indexOf(lab.lig) < 4 ? 'at the weak-field end' : LIG_ORDER.indexOf(lab.lig) > 4 ? 'at the strong-field end' : 'in the middle'} of the spectrochemical series.`;
+    if (lab.shot >= 1.2 && lab.shot < 4.2) text += ' The photon has just been absorbed: the electron is now in eg.';
+    return { title, text, formula: `λ = N_A·hc / Δₒ = 1.197×10⁵ / ${d} = ${la.toFixed(0)} nm` };
+  },
+  controls: [
+    { type: 'segment', key: 'lig', label: 'Ligand · spectrochemical series', note: 'weak field → strong field · approx. values (H₂O exact)',
+      options: LIG_ORDER.map(k => [k, LIG_LABEL[k]]), onChange: (l, v) => { l.delta = LIG[v]; } },
+    { type: 'slider', label: 'Crystal field splitting Δₒ', min: 150, max: 420, step: 1, ends: ['SMALL GAP', 'LARGE GAP'],
+      get: l => l.delta, set: (l, v) => { l.delta = v; l.lig = Math.abs(v - Math.round(D_H2O)) < 0.5 ? 'H2O' : (LIG_ORDER.find(k => Math.abs(LIG[k] - v) < 0.5) || ''); if (l.lig === 'H2O') l.delta = D_H2O; },
+      show: l => `${l.delta.toFixed(0)} kJ/mol` },
+    { type: 'button', label: l => l.shot >= 0 ? 'Photon on its way…' : 'Shine a photon', disabled: l => l.shot >= 0, onClick: l => { l.shot = 0; if (l.view !== 'energy') l.view = 'energy'; },
+      chips: [{ key: 'spectrum', label: 'Show spectrum' }, { key: 'slow', label: 'Slow motion' }] },
+    { type: 'slider', label: 'Sketch — Model', min: 0, max: 1, ends: ['SKETCH', 'MODEL'], get: l => l.m, set: (l, v) => { l.m = v; } },
+    { type: 'segment', key: 'view', label: 'Notebook view', options: [['energy', 'Energy levels'], ['spectrum', 'Spectrum'], ['working', 'Working']] },
+  ],
+  challenges: [
+    { id: 'yellow', text: 'Make the complex look yellow', hint: 'Yellow is what is left when violet light is removed. Which Δₒ absorbs around 410 nm?', test: l => seenOf(lamOf(l.delta)).name === 'yellow' },
+    { id: 'red', text: 'Make it absorb red light', hint: 'Red photons carry little energy, so the gap must be small.', test: l => { const x = lamOf(l.delta); return x >= 620 && x <= 750; } },
+    { id: 'strong', text: 'Find a ligand that gives Δₒ above 300 kJ/mol', hint: 'Look at the strong-field end of the series.', test: l => l.lig && l.delta > 300 },
+    { id: 'short', text: 'Get the absorbed wavelength below 450 nm', hint: 'λ = N_A·hc/Δₒ: shorter λ needs a bigger gap.', test: l => lamOf(l.delta) < 450 },
+  ],
+  quiz: {
+    question: 'Replace H₂O by CN⁻, a stronger-field ligand. The wavelength of light absorbed becomes…',
+    options: ['Longer (towards red)', 'Shorter (towards blue/violet)', 'Unchanged: only the metal ion matters'], correct: 1,
+    right: '✓ Right. CN⁻ splits the d-orbitals more, so Δₒ grows. Since λ = N<sub>A</sub>hc/Δₒ, a bigger gap needs a higher-energy, shorter-wavelength photon. <b>Test it:</b> tap CN⁻ in the ligand row.',
+    wrong: '✗ Not quite. Stronger-field ligands give a bigger Δₒ, and λ = N<sub>A</sub>hc/Δₒ, so a bigger gap means a <b>shorter</b> absorbed wavelength.',
+  },
+});
+})();
+</script>
+</body>
+</html>

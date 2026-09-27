@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SN2 vs SN1 · Sketch to Chemistry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/studio.css">
+</head>
+<body>
+<script src="../shared/catalog.js"></script>
+<script src="../shared/studio.js"></script>
+<script>
+(() => {
+const { clamp, clamp01, S, Lr, lerp, easeOut, hash } = Studio.U;
+const { INK, GRAY, ORANGE, BLUE, SANS, HAND } = Studio.C;
+const { sk, hatch, hand, arrowSk, softEllipse, sphere, tag, ellipsePts, sketchAxes } = Studio.draw;
+let ctx, TT, P;                          // set at the start of every draw()
+const SN1C = '#a8433a';                  // ink colour used for SN1 in charts (SN2 uses BLUE)
+
+// ------------------------------------------------------------ vectors
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const norm = a => { const l = Math.hypot(...a) || 1; return mul(a, 1 / l); };
+
+// ------------------------------------------------------------ chemistry model
+// Substituents on the reacting carbon, in slot order (slot 0 = up, 1 = down-front, 2 = down-back).
+// For 2-bromobutane: slot 0 ethyl (priority 2), slot 1 methyl (3), slot 2 H (4) → with Br on the left this is (R).
+const SUBS = { me: ['H', 'H', 'H'], p: ['Me', 'H', 'H'], s: ['Et', 'Me', 'H'], t: ['Et', 'Me', 'Me'] };
+const SUBNAME = { me: 'CH₃Br', p: '1° (CH₃CH₂Br)', s: '2° ((R)-2-bromobutane)', t: '3° (2-bromo-2-methylbutane)' };
+const REACT = { me: 'CH₃Br · bromomethane', p: 'CH₃CH₂Br · bromoethane', s: '(R)-2-bromobutane', t: '2-bromo-2-methylbutane' };
+const PROD = { me: 'CH₃OH · methanol', p: 'CH₃CH₂OH · ethanol', s: 'butan-2-ol', t: '2-methylbutan-2-ol' };
+const EL = { C: { r: 0.36, col: '#4a4541' }, H: { r: 0.23, col: '#e8e2d6' }, Br: { r: 0.52, col: '#8e4a3a' }, O: { r: 0.4, col: '#b0493f' } };
+
+// qualitative preference model (clearly a teaching score, not real kinetics)
+const SCORE = { me: [3, -4], p: [2, -2], s: [0, 0], t: [-4, 3] };
+function pSN2(l) {
+  if (l.sub === 't') return 0;            // back side completely blocked
+  if (l.sub === 'me') return 1;           // CH₃⁺ far too unstable
+  let s2 = SCORE[l.sub][0], s1 = SCORE[l.sub][1];
+  if (l.nu === 'strong') s2 += 2.5; else { s2 -= 1; s1 += 1; }
+  if (l.solv === 'aprotic') { s2 += 1.5; s1 -= 0.5; } else { s2 -= 0.3; s1 += 1; }
+  return 1 / (1 + Math.exp(-0.9 * (s2 - s1)));
+}
+const predicted = l => pSN2(l) >= 0.5 ? 'SN2' : 'SN1';
+const nuTxt = l => l.nu === 'strong' ? 'OH⁻' : 'H₂O';
+
+// ------------------------------------------------------------ molecule geometry
+function slots(d, phase) {
+  const r = Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const e1 = norm(cross(d, r)), e2 = cross(d, e1);
+  return [0, 1, 2].map(k => { const f = phase + k * 2 * Math.PI / 3; return norm(add(mul(d, 0.334), add(mul(e1, 0.943 * Math.cos(f)), mul(e2, 0.943 * Math.sin(f))))); });
+}
+// cfg: { subs, s (umbrella: +1 = away from Br side, −1 inverted), lg:{pos,style,vis}, nus:[{pos,side,type,style,vis,hLeave}], plus }
+function build(cfg) {
+  const atoms = [], bonds = [];
+  const A = (el, p, o = {}) => { atoms.push({ el, p, alpha: 1, ...o }); return atoms.length - 1; };
+  const B = (a, b, style = 'solid', o = {}) => bonds.push({ a, b, style, alpha: 1, ...o });
+  const c = A('C', [0, 0, 0], { role: 'C' });
+  const dirs = [0, 1, 2].map(k => { const th = k * 2 * Math.PI / 3; return norm([0.334 * cfg.s, 0.943 * Math.cos(th), 0.943 * Math.sin(th)]); });
+  const grow = (type, pi, d, role) => {
+    const pp = atoms[pi].p;
+    if (type === 'H') { B(pi, A('H', add(pp, mul(d, 1.09)), { role })); return; }
+    const ci = A('C', add(pp, mul(d, 1.54)), { role }); B(pi, ci);
+    const sl = slots(d, role === 'g0' ? 0.5 : 1.2);
+    if (type === 'Me') sl.forEach(sd => B(ci, A('H', add(atoms[ci].p, mul(sd, 1.09)))));
+    if (type === 'Et') { grow('Me', ci, sl[0], role + 'b'); sl.slice(1).forEach(sd => B(ci, A('H', add(atoms[ci].p, mul(sd, 1.09))))); }
+  };
+  cfg.subs.forEach((type, k) => grow(type, c, dirs[k], 'g' + k));
+  if (cfg.lg.vis > 0.01) {
+    const i = A('Br', cfg.lg.pos, { role: 'LG', alpha: cfg.lg.vis, bonded: cfg.lg.style !== 'none', charge: cfg.lg.style === 'none' ? '−' : null });
+    if (cfg.lg.style !== 'none') B(c, i, cfg.lg.style);
+  }
+  for (const nu of cfg.nus) {
+    if (nu.vis <= 0.01) continue;
+    const o = A('O', nu.pos, { role: 'NU', alpha: nu.vis, bonded: nu.style === 'solid', charge: nu.style === 'none' && nu.type === 'OH' ? '−' : null });
+    if (nu.style !== 'none') B(c, o, nu.style, { alpha: nu.vis });
+    B(o, A('H', add(nu.pos, mul(norm([nu.side * 0.35, 0.94, 0.1]), 0.96)), { alpha: nu.vis }), 'solid', { alpha: nu.vis });
+    if (nu.type === 'H2O') {
+      const hp = add(nu.pos, mul(norm([nu.side * 0.35, -0.5, 0.85]), 0.96 + nu.hLeave * 2.2));
+      const hi = A('H', hp, { alpha: nu.vis * (1 - S(nu.hLeave, 0.6, 1)), charge: nu.hLeave > 0.25 ? '+' : null });
+      if (nu.hLeave < 0.25) B(o, hi, 'solid', { alpha: nu.vis });
+    }
+  }
+  return { atoms, bonds, dirs, s: cfg.s, plus: cfg.plus, subs: cfg.subs };
+}
+// geometry along the reaction coordinate xi ∈ [0,1]
+function molCfg(sub, mech, xi, side = 1, nuType = 'OH', nuVis = 1, ghost = 0) {
+  const subs = SUBS[sub];
+  let s, lg, nus = [], plus = false;
+  if (mech === 'SN2') {
+    s = 1 - 2 * S(xi, 0.32, 0.66);
+    const rBr = xi < 0.3 ? 1.94 : xi < 0.5 ? lerp(1.94, 2.35, S(xi, 0.3, 0.5)) : lerp(2.35, 6.0, S(xi, 0.5, 1));
+    const rO = xi < 0.45 ? lerp(5.2, 2.1, S(xi, 0, 0.45)) : lerp(2.1, 1.43, S(xi, 0.45, 0.66));
+    lg = { pos: [-rBr, 0, 0], style: xi < 0.33 ? 'solid' : xi < 0.6 ? 'dash' : 'none', vis: 1 };
+    nus.push({ pos: [rO, 0, 0], side: 1, type: nuType, style: xi < 0.3 ? 'none' : xi < 0.6 ? 'dash' : 'solid', vis: nuVis, hLeave: 0 });
+  } else {
+    const rBr = lerp(1.94, 5.3, S(xi, 0.05, 0.35));
+    lg = { pos: [-rBr, -(rBr - 1.94) * 0.45, 0], style: xi < 0.12 ? 'solid' : xi < 0.24 ? 'dash' : 'none', vis: 1 };
+    s = (1 - S(xi, 0.12, 0.35)) - side * S(xi, 0.6, 0.8);
+    plus = xi > 0.26 && xi < 0.66;
+    if (ghost > 0) {
+      const rg = lerp(5.2, 2.7, ghost);
+      nus.push({ pos: [rg, 0, 0], side: 1, type: nuType, style: 'none', vis: 0.8 * nuVis, hLeave: 0 });
+      nus.push({ pos: [-rg, 0, 0], side: -1, type: nuType, style: 'none', vis: 0.8 * nuVis, hLeave: 0 });
+    } else {
+      const rO = lerp(5.2, 1.43, S(xi, 0.45, 0.72));
+      nus.push({ pos: [side * rO, 0, 0], side, type: nuType, style: xi < 0.6 ? 'none' : xi < 0.72 ? 'dash' : 'solid', vis: S(xi, 0.38, 0.46) * nuVis, hLeave: nuType === 'H2O' ? S(xi, 0.82, 1) : 0 });
+    }
+  }
+  return { subs, s, lg, nus, plus };
+}
+// R/S from the actual 3D geometry: priority 1 = bonded Br or O, 2 = slot 0 (ethyl), 3 = slot 1 (methyl), 4 = H
+function configOf(mol) {
+  if (mol.subs.join() !== 'Et,Me,H' || Math.abs(mol.s) < 0.3) return null;
+  const g1 = mol.atoms.find(a => (a.role === 'LG' || a.role === 'NU') && a.bonded);
+  if (!g1) return null;
+  return dot(cross(norm(g1.p), mol.dirs[0]), mol.dirs[1]) < 0 ? 'R' : 'S';
+}
+
+// ------------------------------------------------------------ projection + rendering
+function proj(p, o) {
+  const cy = Math.cos(o.yaw), sy = Math.sin(o.yaw), cp = Math.cos(o.pitch), sp = Math.sin(o.pitch);
+  const x1 = p[0] * cy + p[2] * sy, z1 = -p[0] * sy + p[2] * cy;
+  const y2 = p[1] * cp - z1 * sp, z2 = p[1] * sp + z1 * cp, f = 16 / (16 - z2);
+  return [o.cx + x1 * o.sc * f, o.cy - y2 * o.sc * f, z2, f];
+}
+function sketchOrder(mol) {
+  const idx = mol.bonds.map((b, i) => i);
+  return idx.sort((a, b) => (mol.bonds[a].a === 0 ? 0 : 1) - (mol.bonds[b].a === 0 ? 0 : 1));
+}
+const SKSHORT = { C: 0, H: 11, Br: 21, O: 14 };
+function drawSketchMol(mol, scr, o) {
+  const k = o.sc / 66, base = ctx.globalAlpha, order = sketchOrder(mol), firstBond = {};
+  order.forEach((bi, n) => {
+    const b = mol.bonds[bi], A = mol.atoms[b.a], Bt = mol.atoms[b.b], pa = scr[b.a], pb = scr[b.b];
+    const pr = o.bondProg ? o.bondProg(n) : 1;
+    if (firstBond[b.b] === undefined) firstBond[b.b] = pr;
+    if (firstBond[b.a] === undefined) firstBond[b.a] = pr;
+    if (pr <= 0) return;
+    const L = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) || 1, ux = (pb[0] - pa[0]) / L, uy = (pb[1] - pa[1]) / L;
+    const ra = SKSHORT[A.el] * k, rb = SKSHORT[Bt.el] * k;
+    if (L < ra + rb + 4) return;
+    const p1 = [pa[0] + ux * ra, pa[1] + uy * ra], p2 = [pb[0] - ux * rb, pb[1] - uy * rb];
+    ctx.globalAlpha = base * b.alpha * A.alpha * Bt.alpha;
+    const dz = pb[2] - pa[2];
+    if (b.style === 'dash') sk([p1, p2], bi * 13 + 7, pr, { dash: [8 * k, 8 * k], single: true, w: 1.6 });
+    else if (A.role === 'C' && Math.abs(dz) > 0.35 && pr >= 1) {
+      const nx = -uy, ny = ux, w = 8 * k;
+      if (dz > 0) {             // wedge: bond comes towards the viewer
+        ctx.fillStyle = 'rgba(52,48,44,0.82)';
+        ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0] + nx * w, p2[1] + ny * w); ctx.lineTo(p2[0] - nx * w, p2[1] - ny * w); ctx.closePath(); ctx.fill();
+      } else {                  // hashed wedge: bond goes away
+        for (let i = 1; i <= 7; i++) {
+          const t = i / 7, cx = lerp(p1[0], p2[0], t), cy = lerp(p1[1], p2[1], t), h = w * t;
+          sk([[cx + nx * h, cy + ny * h], [cx - nx * h, cy - ny * h]], bi * 31 + i, 1, { w: 1.4, single: true, amp: 0.4 });
+        }
+      }
+    } else sk([p1, p2], bi * 13 + 7, pr, { w: 1.8 });
+  });
+  mol.atoms.forEach((a, i) => {
+    if (a.el === 'C') return;
+    const pr = o.bondProg ? clamp01((firstBond[i] ?? 1) * 2 - 1) : 1;
+    if (pr <= 0) return;
+    ctx.globalAlpha = base * a.alpha;
+    const size = (a.el === 'H' ? 22 : a.el === 'Br' ? 30 : 28) * k;
+    hand(a.el, scr[i][0], scr[i][1] + size * 0.33, { size, align: 'center', prog: pr, color: a.el === 'O' ? '#8e3a30' : INK });
+  });
+  ctx.globalAlpha = base;
+}
+function drawModelMol(mol, scr, o) {
+  const base = ctx.globalAlpha, items = [];
+  mol.bonds.forEach(b => items.push({ z: Math.min(scr[b.a][2], scr[b.b][2]) - 0.01, b }));
+  mol.atoms.forEach((a, i) => items.push({ z: scr[i][2], a, i }));
+  items.sort((p, q) => p.z - q.z);
+  for (const it of items) {
+    if (it.b) {
+      const b = it.b, pa = scr[b.a], pb = scr[b.b], A = mol.atoms[b.a], Bt = mol.atoms[b.b];
+      const w = 0.15 * o.sc * (pa[3] + pb[3]) / 2;
+      ctx.globalAlpha = base * b.alpha * A.alpha * Bt.alpha;
+      ctx.lineCap = 'round';
+      if (b.style === 'dash') ctx.setLineDash([w * 1.1, w * 1.0]);
+      ctx.strokeStyle = '#9d948a'; ctx.lineWidth = w * (b.style === 'dash' ? 0.8 : 1);
+      ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+      ctx.strokeStyle = '#d4ccc1'; ctx.lineWidth = w * 0.3;
+      ctx.beginPath(); ctx.moveTo(pa[0] - w * 0.18, pa[1] - w * 0.18); ctx.lineTo(pb[0] - w * 0.18, pb[1] - w * 0.18); ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      const a = it.a, [x, y, , f] = scr[it.i], e = EL[a.el], R = e.r * o.sc * f;
+      ctx.globalAlpha = base * a.alpha;
+      const lab = a.el === 'Br' ? 'Br' : a.el === 'O' ? 'O' : '';
+      sphere(x, y, R, e.col, lab, { shadow: false, labelColor: '#f6efe8', labelSize: Math.round(R * 0.75) });
+    }
+  }
+  ctx.globalAlpha = base;
+}
+function drawCharges(mol, scr, o, alpha) {
+  const base = ctx.globalAlpha; ctx.globalAlpha = base * alpha;
+  mol.atoms.forEach((a, i) => {
+    if (!a.charge || a.alpha < 0.2) return;
+    const R = EL[a.el].r * o.sc * scr[i][3];
+    hand(a.el === 'H' ? 'H⁺' : a.charge, scr[i][0] + R + 6, scr[i][1] - R * 0.6, { size: 30 * o.sc / 66, color: ORANGE, weight: 700 });
+  });
+  if (mol.plus) {
+    const R = EL.C.r * o.sc * scr[0][3];
+    hand('+', scr[0][0] + R + 2, scr[0][1] - R - 2, { size: 44 * o.sc / 66, color: ORANGE, weight: 700 });
+  }
+  ctx.globalAlpha = base;
+}
+function priorityPos(mol, scr, o) {
+  const out = {};
+  if (mol.subs.join() !== 'Et,Me,H') return out;
+  mol.atoms.forEach((a, i) => {
+    const R = EL[a.el].r * o.sc * scr[i][3] + 10;
+    const p = [scr[i][0] + R * 0.8, scr[i][1] - R * 0.9];
+    if ((a.role === 'LG' || a.role === 'NU') && a.bonded) out[1] = p;
+    if (a.role === 'g0' && a.el === 'C') out[2] = p;
+    if (a.role === 'g1' && a.el === 'C') out[3] = p;
+    if (a.role === 'g2') out[4] = p;
+  });
+  return out;
+}
+function drawPriorities(mol, scr, o, a) {
+  if (a <= 0.01) return;
+  const pos = priorityPos(mol, scr, o), base = ctx.globalAlpha; ctx.globalAlpha = base * a;
+  for (const k in pos) {
+    const [x, y] = pos[k];
+    ctx.fillStyle = 'rgba(243,240,232,0.85)'; ctx.beginPath(); ctx.arc(x, y - 9, 15, 0, Math.PI * 2); ctx.fill();
+    sk(ellipsePts(x, y - 9, 15, 15, 16), 700 + +k, 1, { w: 1.5, color: ORANGE, single: true, amp: 0.6 });
+    hand(k, x, y + 1, { size: 26, color: ORANGE, align: 'center', weight: 700 });
+  }
+  ctx.globalAlpha = base;
+  return pos;
+}
+function renderMol(mol, o) {
+  const scr = mol.atoms.map(a => proj(a.p, o)), alpha = o.alpha ?? 1;
+  if (alpha <= 0.01) return scr;
+  const base = ctx.globalAlpha;
+  if (o.m > 0.05) softEllipse(o.cx + 30, o.cy + 3.3 * o.sc, 3.6 * o.sc, 0.4 * o.sc, 0.16 * o.m * alpha);
+  const skA = (1 - 0.82 * o.m) * alpha;
+  if (skA > 0.01) { ctx.globalAlpha = base * skA; drawSketchMol(mol, scr, o); }
+  if (o.m > 0.01) { ctx.globalAlpha = base * o.m * alpha; drawModelMol(mol, scr, o); }
+  ctx.globalAlpha = base;
+  drawCharges(mol, scr, o, alpha * (o.bondProg ? Lr(TT ?? 9, 4.0, 4.4) : 1));
+  return scr;
+}
+function badge(x, y, letter, a, caption) {
+  if (!letter || a <= 0.01) return;
+  const base = ctx.globalAlpha; ctx.globalAlpha = base * a;
+  sk(ellipsePts(x, y, 34, 34, 22), letter === 'R' ? 811 : 813, 1, { w: 2.2, color: ORANGE });
+  hand(letter, x, y + 17, { size: 52, color: ORANGE, align: 'center', weight: 700 });
+  if (caption) hand(caption, x, y + 66, { size: 22, color: GRAY, align: 'center' });
+  ctx.globalAlpha = base;
+}
+
+// ------------------------------------------------------------ notebook views
+function profileY(mech, x) {
+  const base = lerp(0.32, 0.12, S(x, 0, 1));
+  if (mech === 'SN2') return base + 0.58 * Math.exp(-(((x - 0.5) / 0.13) ** 2));
+  return base + 0.56 * Math.exp(-(((x - 0.25) / 0.08) ** 2)) + 0.3 * S(x, 0.18, 0.28) * (1 - S(x, 0.66, 0.78)) + 0.16 * Math.exp(-(((x - 0.62) / 0.05) ** 2));
+}
+function drawProfile(a, mech, xi, prog) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand(`energy profile · ${mech}`, 1070, 205, { size: 40, prog: Math.min(1, prog * 3) });
+  const { X, Y } = sketchAxes({ x0: 1100, y0: 290, x1: 1500, y1: 690 }, { xmin: 0, xmax: 1, ymin: 0, ymax: 1.2 },
+    { xlabel: 'reaction progress →', ylabel: 'energy', prog: Math.min(1, prog * 2), seed: 951 });
+  const pts = []; for (let i = 0; i <= 80; i++) { const x = i / 80; pts.push([X(x), Y(profileY(mech, x))]); }
+  const cp = clamp01(prog * 1.4 - 0.3);
+  sk(pts, mech === 'SN2' ? 961 : 963, cp, { w: 2.3 });
+  if (cp >= 1) {
+    const lab = (s, x, dy, o = {}) => hand(s, X(x), Y(profileY(mech, x)) + dy, { size: 24, align: 'center', ...o });
+    lab('R–Br + Nu', 0.06, 34, { size: 21, color: GRAY });
+    lab('R–Nu + Br⁻', 0.94, 34, { size: 21, color: GRAY });
+    if (mech === 'SN2') {
+      lab('TS', 0.5, -18, { color: ORANGE });
+      lab('[Nu···C···Br]⁻', 0.5, -44, { size: 21, color: GRAY });
+      hand('one step, one hump', 1110, 770, { size: 26, color: ORANGE });
+      hand('rate = k [RX] [Nu]', 1110, 806, { size: 26, color: GRAY });
+    } else {
+      lab('TS₁ (slow)', 0.25, -18, { color: ORANGE, size: 22 });
+      lab('C⁺', 0.45, 34, { color: ORANGE, size: 28 });
+      lab('TS₂', 0.62, -16, { color: GRAY, size: 21 });
+      hand('two steps · carbocation valley', 1110, 770, { size: 26, color: ORANGE });
+      hand('slow step has only RX → rate = k [RX]', 1110, 806, { size: 24, color: GRAY });
+    }
+  }
+  if (cp > 0.95) {
+    const x = X(clamp01(xi)), y = Y(profileY(mech, clamp01(xi)));
+    ctx.fillStyle = ORANGE; ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#f3f0e8'; ctx.lineWidth = 3; ctx.stroke();
+  }
+  ctx.globalAlpha = b;
+}
+function drawConfigView(a) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('(R)-2-bromobutane', 1070, 205, { size: 40, prog: P(6.8, 7.6) });
+  hand('CIP priorities', 1072, 262, { size: 26, color: GRAY, prog: P(7.4, 7.9) });
+  const rows = [['1', 'Br', '(highest atomic number)'], ['2', 'C₂H₅', '(C, then its C beats H)'], ['3', 'CH₃', ''], ['4', 'H', '(lowest)']];
+  rows.forEach(([k, g, why], i) => {
+    const y = 318 + i * 52, p = P(7.8 + i * 0.35, 8.2 + i * 0.35);
+    hand(k, 1086, y, { size: 32, color: ORANGE, weight: 700, prog: p });
+    hand(g, 1120, y, { size: 32, prog: p });
+    hand(why, 1215, y, { size: 22, color: GRAY, prog: p });
+  });
+  hand('turn H away from you:', 1072, 560, { size: 28, prog: P(9.4, 10) });
+  hand('1 → 2 → 3 goes clockwise  →  R', 1072, 604, { size: 30, color: ORANGE, prog: P(10, 10.8) });
+  ctx.globalAlpha = b;
+}
+function drawTrend(a) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('which path?', 1070, 205, { size: 40, prog: P(41.5, 42.2) });
+  const cols = [['CH₃X', 1, 0], ['1°', 0.75, 0.08], ['2°', 0.42, 0.42], ['3°', 0.03, 1]], base = 640, H = 290;
+  sk([[1100, base], [1500, base]], 1201, P(41.8, 42.4), { w: 1.6 });
+  cols.forEach(([lab, s2, s1], i) => {
+    const x = 1140 + i * 100, p = P(42.3 + i * 0.35, 42.9 + i * 0.35);
+    if (p <= 0) return;
+    for (const [v, dx, col, seed] of [[s2, 0, BLUE, 1210 + i], [s1, 36, SN1C, 1220 + i]]) {
+      const h = Math.max(3, v * H * p);
+      sk([[x + dx, base], [x + dx, base - h], [x + dx + 30, base - h], [x + dx + 30, base]], seed, 1, { w: 1.5, color: col });
+      hatch(() => { ctx.beginPath(); ctx.rect(x + dx, base - h, 30, h); }, x + dx, base - h, x + dx + 30, base, 7, seed, 1, 0.5, col);
+    }
+    hand(lab, x + 33, base + 32, { size: 26, align: 'center', prog: p });
+  });
+  const lp = P(43.8, 44.6);
+  hand('SN2', 1110, 270, { size: 28, color: BLUE, prog: lp, weight: 700 }); hand('← crowding at the back matters', 1170, 270, { size: 22, color: GRAY, prog: lp });
+  hand('SN1', 1110, 305, { size: 28, color: SN1C, prog: lp, weight: 700 }); hand('← C⁺ stability matters (3° > 2° > 1°)', 1170, 305, { size: 22, color: GRAY, prog: lp });
+  hand('strong Nu + polar aprotic  →  SN2', 1080, 725, { size: 25, prog: P(45, 45.8) });
+  hand('weak Nu + polar protic (water)  →  SN1', 1080, 762, { size: 25, prog: P(45.8, 46.6) });
+  hand('2° RBr + OH⁻(aq): OH⁻ is strong → mostly SN2', 1080, 810, { size: 25, color: ORANGE, prog: P(46.8, 47.8) });
+  ctx.globalAlpha = b;
+}
+function drawSummary(a, lab) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a, X = 1070;
+  if (!lab) {                                         // the tour's answer to the class problem
+    hand('the answer', X, 205, { size: 40, prog: P(25.8, 26.4) });
+    hand('aq. NaOH gives OH⁻, a strong nucleophile', X, 270, { size: 27, prog: P(26.4, 27.2) });
+    hand('2° carbon, back side reachable  →  SN2', X, 315, { size: 27, prog: P(27.2, 28) });
+    hand('one step:  rate = k [RX] [OH⁻]', X, 360, { size: 27, prog: P(28, 28.6) });
+    hand('backside attack flips the umbrella', X, 405, { size: 27, prog: P(28.6, 29.2) });
+    hand('(Walden inversion)', X + 20, 440, { size: 24, color: GRAY, prog: P(29.2, 29.6) });
+    const p = P(29.6, 30.6);
+    if (p > 0) {
+      const w = hand('(R)-2-bromobutane  →  (S)-butan-2-ol', X + 10, 515, { size: 32, color: ORANGE, weight: 700, prog: p });
+      const cp = P(30.4, 31);
+      if (cp > 0) sk(ellipsePts(X + 10 + w / 2, 503, w / 2 + 22, 36, 30, -2.2, -2.2 + Math.PI * 2.15), 1301, cp, { w: 2.2, color: ORANGE });
+    }
+    hand('SN1 instead (weak Nu, water): C⁺ → racemic (±)', X, 600, { size: 24, color: GRAY, prog: P(31, 31.8) });
+  } else {                                            // live summary of the student's conditions
+    const p2 = pSN2(lab), mech = predicted(lab);
+    hand('what happens?', X, 205, { size: 40 });
+    hand(`${SUBNAME[lab.sub]}`, X, 262, { size: 26 });
+    hand(`+ ${lab.nu === 'strong' ? 'OH⁻ (strong)' : 'H₂O (weak)'} in ${lab.solv === 'aprotic' ? 'acetone (aprotic)' : 'water (protic)'}`, X, 298, { size: 26 });
+    hand(`→ ${mech}   (SN2 ${Math.round(p2 * 100)} % · SN1 ${Math.round((1 - p2) * 100)} %)`, X, 350, { size: 30, color: mech === 'SN2' ? BLUE : SN1C, weight: 700 });
+    hand(mech === 'SN2' ? 'one step, backside attack' : 'two steps via a flat carbocation', X, 390, { size: 26, color: GRAY });
+    hand(mech === 'SN2' ? `rate = k [RX] [${nuTxt(lab)}]` : 'rate = k [RX]', X, 440, { size: 30 });
+    let prod, conf;
+    if (lab.sub === 's') {
+      prod = mech === 'SN2' ? '(R)-2-bromobutane → (S)-butan-2-ol' : '(R)-2-bromobutane → (±)-butan-2-ol';
+      conf = mech === 'SN2' ? 'configuration inverted (Walden inversion)' : 'configuration scrambled → racemic mixture';
+    } else { prod = `${REACT[lab.sub].split(' · ')[0]} → ${PROD[lab.sub].split(' · ').pop()}`; conf = 'no stereocentre, so no R / S to track'; }
+    const w = hand(prod, X + 10, 520, { size: prod.length > 34 ? 23 : 29, color: ORANGE, weight: 700 });
+    sk(ellipsePts(X + 10 + w / 2, 509, w / 2 + 20, 32, 30, -2.2, -2.2 + Math.PI * 2.15), 1311, 1, { w: 2, color: ORANGE });
+    hand(conf, X, 600, { size: 25, color: GRAY });
+    if (lab.sub === 't' && lab.nu === 'strong') hand('(with strong OH⁻, elimination also competes)', X, 636, { size: 23, color: GRAY });
+  }
+  ctx.globalAlpha = b;
+}
+function drawProducts(a, lab) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('products of your runs', 1070, 205, { size: 40 });
+  if (lab.sub !== 's') {
+    hand('this substrate has no stereocentre,', 1075, 300, { size: 28 });
+    hand('so its product is achiral: no R or S.', 1075, 340, { size: 28 });
+    hand(`product: ${PROD[lab.sub]}`, 1075, 410, { size: 28, color: ORANGE });
+    hand('pick the 2° substrate to count R vs S', 1075, 480, { size: 24, color: GRAY });
+    ctx.globalAlpha = b; return;
+  }
+  const { R, S: Sn } = lab.tally, n = R + Sn, base = 690, H = 330;
+  sk([[1110, base], [1490, base]], 1401, 1, { w: 1.6 });
+  for (const [cnt, x, col, name, seed] of [[R, 1170, BLUE, '(R)-butan-2-ol', 1411], [Sn, 1350, ORANGE, '(S)-butan-2-ol', 1413]]) {
+    const h = n ? Math.max(3, cnt / n * H) : 3;
+    sk([[x, base], [x, base - h], [x + 90, base - h], [x + 90, base]], seed, 1, { w: 1.6, color: col });
+    hatch(() => { ctx.beginPath(); ctx.rect(x, base - h, 90, h); }, x, base - h, x + 90, base, 8, seed, 1, 0.45, col);
+    hand(name, x + 45, base + 34, { size: 23, align: 'center' });
+    if (n) hand(`${cnt}  (${Math.round(cnt / n * 100)} %)`, x + 45, base - h - 12, { size: 26, align: 'center', color: col, weight: 700 });
+  }
+  hand(n ? `${n} molecule${n > 1 ? 's' : ''} reacted` : 'press "Run 20 molecules"', 1110, 285, { size: 24, color: GRAY });
+  if (n >= 5) {
+    const racemic = Math.abs(Sn - R) / n < 0.3;
+    hand(racemic ? 'about 50 : 50 → racemic (±): optically inactive' : 'mostly (S) → inversion: optically active', 1100, 790, { size: 26, color: ORANGE });
+  }
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ tour notes
+function note(t, t0, t1, tOut, fn) {
+  if (t < t0 || t > tOut + 0.6) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * (1 - S(t, tOut, tOut + 0.6));
+  fn(Lr(t, t0, t1)); ctx.globalAlpha = b;
+}
+function drawLobe(o, a) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const c0 = proj([0, 0, 0], o), cx = proj([1, 0, 0], o), ang = Math.atan2(cx[1] - c0[1], cx[0] - c0[0]);
+  const lobe = (d, rx, ry, seed) => {
+    const c = proj([d, 0, 0], o), pts = ellipsePts(0, 0, rx * o.sc, ry * o.sc, 26).map(([x, y]) => [c[0] + x * Math.cos(ang) - y * Math.sin(ang), c[1] + x * Math.sin(ang) + y * Math.cos(ang)]);
+    sk(pts, seed, 1, { w: 1.8, color: ORANGE });
+    hatch(() => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); }, c[0] - rx * o.sc, c[1] - rx * o.sc, c[0] + rx * o.sc, c[1] + rx * o.sc, 9, seed, 1, 0.25, ORANGE);
+  };
+  lobe(1.05, 0.85, 0.5, 1501); lobe(-0.5, 0.32, 0.24, 1503);
+  ctx.globalAlpha = b;
+}
+function drawTourNotes(t, scr, mol, o) {
+  note(t, 12.6, 13.6, 17.4, p => { hand('OH⁻ attacks from the back,', 700, 380, { size: 30, color: ORANGE, align: 'center', prog: p }); hand('180° away from Br', 700, 414, { size: 30, color: ORANGE, align: 'center', prog: p }); });
+  note(t, 13.6, 14.4, 17.4, p => hand('Br blocks the front', 250, 420, { size: 30, color: ORANGE, align: 'center', prog: p }));
+  note(t, 14.4, 15.4, 17.4, p => { hand('the empty σ* (C–Br) orbital', 640, 700, { size: 26, color: ORANGE, align: 'center', prog: p }); hand('has its big lobe at the back', 640, 732, { size: 26, color: ORANGE, align: 'center', prog: p }); });
+  note(t, 19.9, 20.8, 24.6, p => { hand('transition state: C is half-bonded', 520, 245, { size: 28, color: ORANGE, align: 'center', prog: p }); hand('to both O and Br (5 groups, flat)', 520, 277, { size: 28, color: ORANGE, align: 'center', prog: p }); });
+  note(t, 21.2, 22.0, 24.6, p => hand('the umbrella flips inside out', 470, 815, { size: 30, color: ORANGE, align: 'center', prog: p }));
+  note(t, 22.6, 23.3, 24.6, p => hand('Br⁻ leaves', 150, 440, { size: 30, color: ORANGE, align: 'center', prog: p }));
+  note(t, 26.8, 27.8, 31.5, p => hand('H at the back: 1 → 2 → 3 anticlockwise → S', 470, 815, { size: 28, color: ORANGE, align: 'center', prog: p }));
+  note(t, 33.0, 33.8, 35.6, p => hand('C–Br breaks first (slow step)', 250, 400, { size: 28, color: ORANGE, align: 'center', prog: p }));
+  note(t, 34.6, 35.4, 37.8, p => hand('flat C⁺: open on both faces', 520, 255, { size: 30, color: ORANGE, align: 'center', prog: p }));
+  note(t, 35.9, 36.6, 37.8, p => hand('water can attack from either side', 470, 815, { size: 28, color: ORANGE, align: 'center', prog: p }));
+  note(t, 38.8, 39.7, 40.8, p => hand('50 : 50 → racemic (±)-butan-2-ol · optically inactive', 470, 815, { size: 28, color: ORANGE, align: 'center', prog: p }));
+  if (t > 41.6 && t < 48.8) {
+    const k = clamp(Math.floor((t - 41.6) / 1.75), 0, 3), ph = (t - 41.6) - k * 1.75;
+    const msg = ['wide-open back → fastest SN2', 'still open → SN2', 'a bit crowded → either path', 'back blocked → no SN2, only SN1'][k];
+    const b = ctx.globalAlpha; ctx.globalAlpha = b * S(ph, 0.2, 0.5) * (1 - S(ph, 1.5, 1.7) * (k < 3 ? 1 : 0));
+    hand(msg, 520, 255, { size: 30, color: ORANGE, align: 'center' });
+    ctx.globalAlpha = b;
+  }
+  note(t, 49.3, 50.2, 60, p => { hand('your turn', 1380, 940, { size: 54, color: ORANGE, prog: p, weight: 700, align: 'center' }); arrowSk(1470, 925, 1580, 900, 1009, p); });
+}
+function rsArrows(pos, seed, p) {
+  if (!pos[1] || !pos[2] || !pos[3] || p <= 0) return;
+  arrowSk(pos[1][0], pos[1][1] - 26, pos[2][0] - 20, pos[2][1] - 10, seed, Math.min(1, p * 2), ORANGE, 0.35);
+  arrowSk(pos[2][0] + 16, pos[2][1] + 6, pos[3][0] + 18, pos[3][1] - 22, seed + 3, clamp01(p * 2 - 1), ORANGE, 0.35);
+}
+
+// ------------------------------------------------------------ lab helpers
+function rng(l) { l.seed = (l.seed * 9301 + 49297) % 233280; return l.seed / 233280; }
+function startRun(l, sampled) {
+  const mech = sampled ? (rng(l) < pSN2(l) ? 'SN2' : 'SN1') : predicted(l);
+  l.anim = { mech, side: rng(l) < 0.55 ? 1 : -1, xi: 0, running: true };
+}
+function resetRun(l) {
+  l.anim = { mech: predicted(l), side: 1, xi: 0, running: false };
+  l.tally = { R: 0, S: 0 }; l.batchLeft = 0; l.completed = 0;
+}
+function tallyText(l) {
+  const n = l.tally.R + l.tally.S;
+  return n ? Math.round(l.tally.S / n * 100) + ' %' : null;
+}
+
+// ------------------------------------------------------------ lesson config
+Studio.lesson({
+  id: 'sn2',
+  unit: 'Unit 6 · Haloalkanes and Haloarenes',
+  title: 'SN2 vs SN1',
+  headline: 'R–Br + OH⁻ → R–OH + Br⁻',
+  panelEyebrow: 'Substitution lab',
+  intro: 'A pencil sketch of 2-bromobutane becomes a real molecule. Watch OH⁻ attack from behind and flip it inside out, then compare with the carbocation path.',
+  welcome: { title: 'Why does the product come out as a mirror image?', text: 'Press Play the tour for a 53-second guided story, or jump straight into the lab.', formula: 'SN2: rate = k[RX][Nu]   ·   SN1: rate = k[RX]' },
+  problem: {
+    html: '<span class="cell">(R)-2-bromobutane + NaOH(aq)</span>Predict the mechanism and the product, and explain what happens to the configuration in SN2 and in SN1 conditions.',
+    answer: 'SN2 (strong OH⁻, one step, rate = k[RX][OH⁻]) → (S)-butan-2-ol by Walden inversion. Under SN1 conditions the planar carbocation gives racemic (±)-butan-2-ol.',
+    revealAt: 30.6, revealChapter: 'R → S',
+  },
+  tourEnd: 53,
+  introT: 6,
+  sketchPencil: [0.3, 6.2],
+  chapters: [
+    { t: 0, key: 'SKETCH', title: 'The molecule on paper', text: '2-Bromobutane: the middle carbon carries Br, an ethyl group, a methyl group and H. Wedges come towards you and dashes go away. Ranking the groups by atomic number gives Br > C₂H₅ > CH₃ > H.', formula: '(R)-CH₃CH(Br)CH₂CH₃' },
+    { t: 6, key: 'BUILD', title: 'A real 3D molecule', text: 'The same molecule as a ball-and-stick model. With H pointing away from you, 1 → 2 → 3 runs clockwise, so this is the (R) form.', formula: 'priorities: Br (1) > C₂H₅ (2) > CH₃ (3) > H (4)' },
+    { t: 11, key: 'BACKSIDE', title: 'Attack from behind', text: 'OH⁻ cannot come in from the front because the bulky Br is in the way. It approaches from exactly opposite Br, where the empty σ* orbital of the C–Br bond has its big lobe.', formula: 'Nu⁻ approaches at 180° to the leaving group' },
+    { t: 18, key: 'FLIP', title: 'One step, umbrella flip', text: 'The O–C bond forms while the C–Br bond breaks, all in one step. At the transition state the carbon is flat and half-bonded to both. The other three groups flip over like an umbrella in the wind, and Br⁻ leaves.', formula: 'SN2: one step · rate = k[RX][OH⁻]' },
+    { t: 25, key: 'R → S', title: 'Inversion of configuration', text: 'OH now has priority 1. With H at the back, 1 → 2 → 3 runs anticlockwise: the product is (S)-butan-2-ol. This complete inversion is called Walden inversion.', formula: '(R)-2-bromobutane → (S)-butan-2-ol' },
+    { t: 32, key: 'SN1 PATH', title: 'The other road: SN1', text: 'With a weak nucleophile in a polar protic solvent (water), Br leaves first and forms a flat carbocation. Water can attack either face equally, giving a 50 : 50 racemic mixture.', formula: 'SN1: two steps · rate = k[RX] · racemisation' },
+    { t: 41, key: 'WHICH PATH?', title: 'What decides the path?', text: 'Crowding at the back slows SN2 (CH₃ > 1° > 2° > 3°). Carbocation stability speeds SN1 (3° > 2° > 1°). A secondary halide with strong OH⁻ goes mostly by SN2, which answers our question.', formula: 'SN2: CH₃X > 1° > 2° > 3°   ·   SN1: 3° > 2° > 1°' },
+    { t: 49, key: 'YOUR TURN', title: 'Your turn', text: 'Choose the substrate, nucleophile and solvent, run single molecules or a batch of 20, and try to complete the challenges.', formula: '' },
+  ],
+  camera: [[0, 800, 500, 1], [6, 800, 500, 1], [8, 780, 510, 1.04], [11.6, 780, 510, 1.04], [12.8, 600, 530, 1.4], [17.5, 600, 530, 1.4], [18.8, 800, 510, 1], [99, 800, 510, 1]],
+  tourState(t) {
+    const st = {
+      sub: 's', mech: 'SN2', xi: 0, side: 1, nuType: 'OH', nuVis: 0, m: S(t, 6.5, 9), alpha: 1, ghost: 0, split: 0, profMech: 'SN2',
+      pri: S(t, 9, 9.6) * (1 - S(t, 11.2, 11.7)) + S(t, 25.8, 26.4) * (1 - S(t, 31.4, 31.9)),
+      lobe: S(t, 13, 13.8) * (1 - S(t, 17.3, 17.9)),
+      views: {
+        config: S(t, 6.6, 7.3) * (1 - S(t, 11.8, 12.4)),
+        energy: S(t, 18.2, 18.9) * (1 - S(t, 25, 25.6)) + S(t, 32.3, 33) * (1 - S(t, 40.8, 41.4)),
+        summary: S(t, 25.6, 26.3) * (1 - S(t, 31.8, 32.3)) + S(t, 49.2, 49.9),
+        trend: S(t, 41.4, 42.1) * (1 - S(t, 48.7, 49.2)),
+      },
+    };
+    if (t >= 11 && t < 32) { st.nuVis = S(t, 11.4, 12.2); st.xi = t < 18 ? 0.28 * S(t, 12.3, 17) : 0.28 + 0.72 * S(t, 18.6, 23.2); }
+    st.dotXi = st.xi;
+    if (t >= 32 && t < 41) {
+      Object.assign(st, { mech: 'SN1', nuType: 'H2O', nuVis: 1, profMech: 'SN1', xi: 0.5 * S(t, 32.6, 35.3) });
+      st.ghost = t >= 35.6 ? Math.max(0.001, S(t, 35.8, 37.8)) : 0;
+      st.split = S(t, 37.9, 38.7);
+      st.dotXi = t < 35.6 ? st.xi : 0.5 + 0.5 * S(t, 35.8, 38.5);
+    }
+    if (t >= 41 && t < 49) { st.sub = ['me', 'p', 's', 't'][clamp(Math.floor((t - 41.6) / 1.75), 0, 3)]; st.xi = 0.2; st.nuVis = 1; }
+    if (t >= 49) { st.xi = 1; st.nuVis = 1; }
+    const dip = c => 1 - S(t, c - 0.35, c) * (1 - S(t, c, c + 0.35));
+    st.alpha = dip(32) * dip(41) * dip(49) * dip(43.35) * dip(45.1) * dip(46.85);
+    return st;
+  },
+  initLab() {
+    const l = { sub: 's', nu: 'strong', solv: 'protic', m: 1, view: 'energy', slow: false, pri: true, seed: 12345 };
+    resetRun(l); return l;
+  },
+  labState(l) {
+    return { sub: l.sub, mech: l.anim.mech, xi: l.anim.xi, side: l.anim.side, nuType: l.nu === 'strong' ? 'OH' : 'H2O', nuVis: 1, m: l.m, alpha: 1, ghost: 0, split: 0, profMech: l.anim.mech, dotXi: l.anim.xi, pri: l.pri ? 1 : 0, lobe: 0 };
+  },
+  step(l, dt) {
+    const a = l.anim;
+    if (!a.running) return;
+    a.xi += dt * (l.batchLeft > 0 ? 1.4 : 0.24);
+    if (a.xi >= 1) {
+      a.xi = 1; a.running = false; l.completed++;
+      if (l.sub === 's') l.tally[a.mech === 'SN2' ? 'S' : (a.side > 0 ? 'S' : 'R')]++;
+      if (l.batchLeft > 0) { l.batchLeft--; if (l.batchLeft > 0) startRun(l, true); }
+    }
+  },
+  draw(env) {
+    ctx = env.ctx; TT = env.TT; P = env.P;
+    const st = env.st, lab = env.mode === 'lab' ? env.lab : null;
+    const sway = lab ? 0.14 * Math.sin(env.clock * 0.45) : 0.14 * Math.sin(TT * 0.45) * S(TT, 8, 10);
+    const o = { cx: 470, cy: 530, sc: 78, yaw: -0.35 + sway, pitch: 0.22, m: st.m, alpha: st.alpha };
+
+    hand('SN2 vs SN1', 60, 100, { size: 50, prog: P(3.6, 4.4), weight: 700 });
+    hand('(R)-2-bromobutane + OH⁻', 62, 140, { size: 28, color: GRAY, prog: P(4.2, 5.0) });
+
+    // the main molecule
+    const sketching = env.mode !== 'lab' && TT < 6;
+    if (sketching) o.bondProg = k => P(0.5 + k * 0.24, 0.85 + k * 0.24);
+    const mol = build(molCfg(st.sub, st.mech, st.xi, st.side, st.nuType, st.nuVis, st.ghost));
+    let scr = null, tipAfter = null;
+    if (st.split < 1) {
+      drawLobe(o, st.lobe * o.alpha);
+      scr = renderMol(mol, { ...o, alpha: o.alpha * (1 - st.split) });
+      tipAfter = Studio.pencilTip;
+      const priA = (env.mode !== 'lab' && TT < 6.6 ? P(4.6, 5.2) * (1 - S(TT, 6.1, 6.5)) : st.pri) * (1 - st.split) * o.alpha;
+      const pos = drawPriorities(mol, scr, o, priA) || {};
+      if (env.mode === 'tour') { rsArrows(pos, 1601, P(5.1, 5.9) * (1 - S(TT, 6.1, 6.5))); if (TT > 26) rsArrows(pos, 1605, P(26.4, 27.6) * (1 - S(TT, 31.2, 31.7))); }
+      const cfg = configOf(mol);
+      const badgeA = (env.mode === 'lab' ? 1 : P(5.6, 6.1)) * (1 - st.split) * o.alpha;
+      badge(130, 250, cfg, badgeA, cfg ? 'configuration' : '');
+      // name tag
+      let name = REACT[st.sub];
+      if (st.mech === 'SN2' && st.xi > 0.36 && st.xi < 0.6) name = 'transition state  [HO···C···Br]⁻';
+      else if (st.mech === 'SN1' && st.xi > 0.26 && (st.xi < 0.7 || st.ghost)) name = 'carbocation (flat, sp²)';
+      else if (st.xi >= 0.6) name = st.sub === 's' ? `(${cfg || '±'})-butan-2-ol` : PROD[st.sub];
+      tag(470, 890, name, { alpha: (env.mode === 'lab' ? 1 : S(TT, 8.3, 9.2)) * o.alpha * (1 - st.split), color: INK });
+    }
+    // SN1 split: two mirror-image products
+    if (st.split > 0) {
+      for (const [side, cx] of [[-1, 270], [1, 660]]) {
+        const po = { ...o, cx, cy: 560, sc: 46, alpha: st.split * o.alpha, bondProg: null };
+        const pm = build(molCfg('s', 'SN1', 1, side, 'H2O'));
+        renderMol(pm, po);
+        const c = configOf(pm);
+        badge(cx, 330, c, st.split * o.alpha, side > 0 ? 'attack from the back' : 'attack from the front');
+      }
+    }
+    if (env.mode === 'tour') drawTourNotes(TT, scr, mol, o);
+    if (lab && !lab.anim.running && lab.anim.xi === 0) hand('press Run reaction →', 470, 815, { size: 28, color: ORANGE, align: 'center' });
+
+    // notebook
+    const v = lab ? { energy: lab.view === 'energy' ? 1 : 0, products: lab.view === 'products' ? 1 : 0, summary: lab.view === 'summary' ? 1 : 0 } : st.views;
+    drawConfigView(v.config || 0);
+    drawProfile(v.energy || 0, st.profMech, st.dotXi, lab ? 1 : (st.profMech === 'SN2' ? P(18.3, 20) : P(32.4, 34)));
+    drawSummary(v.summary || 0, lab);
+    drawTrend(v.trend || 0);
+    if (lab) drawProducts(v.products, lab);
+    if (tipAfter) Studio.pencilTip = tipAfter;
+  },
+  stats: [{ id: 'M', label: 'MECHANISM' }, { id: 'R', label: 'RATE LAW' }, { id: 'P', label: 'PRODUCT' }, { id: 'I', label: 'INVERSION' }],
+  statValues(st, mode, l) {
+    const small = s => `<span style="font-size:11.5px">${s}</span>`;
+    const mech = mode === 'lab' ? predicted(l) : st.mech;
+    const nu = mode === 'lab' ? nuTxt(l) : (st.nuType === 'OH' ? 'OH⁻' : 'H₂O');
+    const sub = mode === 'lab' ? l.sub : st.sub;
+    let prod = '—', inv = '—';
+    if (sub === 's') {
+      if (mode === 'lab') {
+        const n = l.tally.R + l.tally.S, p2 = pSN2(l);
+        prod = n ? (Math.min(l.tally.R, l.tally.S) / n > 0.25 ? '(±)' : l.tally.S >= l.tally.R ? '(S)' : '(R)') : (mech === 'SN2' ? '(S)' : '(±)');
+        inv = tallyText(l) || '~' + Math.round((p2 + (1 - p2) * 0.55) * 100) + ' %';
+      } else if (mech === 'SN2' ? st.xi >= 0.6 : st.split > 0.5) { prod = mech === 'SN2' ? '(S)' : '(±)'; inv = mech === 'SN2' ? '100 %' : '~50 %'; }
+    } else prod = small('achiral');
+    return { M: mech === 'SN2' ? 'S<sub>N</sub>2' : 'S<sub>N</sub>1', R: small(mech === 'SN2' ? `k[RX][${nu}]` : 'k[RX]'), P: prod, I: inv };
+  },
+  now(st, l) {
+    const p2 = pSN2(l), mech = predicted(l);
+    const subT = { me: 'CH₃–Br has nothing blocking its back side, and CH₃⁺ is far too unstable to form, so it reacts only by SN2.',
+      p: 'A primary carbon has an open back side and would form a poor 1° carbocation, so SN2 dominates.',
+      s: 'A secondary carbon sits in the middle: the back side is partly crowded and the 2° carbocation is moderately stable, so the nucleophile and solvent decide.',
+      t: 'Three groups completely block the back side (no SN2), but the 3° carbocation is very stable, so SN1 takes over.' }[l.sub];
+    const nuT = l.nu === 'strong' ? 'OH⁻ is a strong nucleophile that pushes straight in (favours SN2).' : 'H₂O is a weak nucleophile; it waits for a carbocation to form (favours SN1).';
+    const sT = l.solv === 'aprotic' ? 'Acetone does not cage the nucleophile, so it stays reactive (SN2).' : 'Water stabilises the carbocation and the leaving Br⁻ by hydrogen bonding (SN1).';
+    let title = `${mech} favoured (${Math.round(Math.max(p2, 1 - p2) * 100)} %)`;
+    const a = l.anim;
+    if (a.running) {
+      const stage = a.mech === 'SN2'
+        ? (a.xi < 0.3 ? 'OH⁻ is approaching the back side.' : a.xi < 0.6 ? 'Transition state: C is half-bonded to O and Br.' : 'The umbrella has flipped; Br⁻ is leaving.')
+        : (a.xi < 0.3 ? 'C–Br is breaking on its own (slow step).' : a.xi < 0.55 ? 'A flat carbocation has formed.' : `The nucleophile attacks from the ${a.side > 0 ? 'back' : 'front'} face.`);
+      title = `Running ${a.mech}${l.batchLeft ? ` · molecule ${21 - l.batchLeft} of 20` : ''}`;
+      return { title, text: stage + ' ' + subT, formula: a.mech === 'SN2' ? `rate = k[RX][${nuTxt(l)}]  ·  one step, inversion` : 'rate = k[RX]  ·  two steps via C⁺, racemisation' };
+    }
+    return { title, text: `${subT} ${nuT} ${sT}`, formula: mech === 'SN2' ? `rate = k[RX][${nuTxt(l)}]  ·  one step, inversion` : 'rate = k[RX]  ·  two steps via C⁺, racemisation' };
+  },
+  controls: [
+    { type: 'segment', key: 'sub', label: 'Substrate', options: [['me', 'CH₃Br'], ['p', '1°'], ['s', '2°'], ['t', '3°']],
+      note: 'methyl · primary · secondary · tertiary', onChange: l => resetRun(l) },
+    { type: 'segment', key: 'nu', label: 'Nucleophile', options: [['strong', 'OH⁻ · strong'], ['weak', 'H₂O · weak']], onChange: l => resetRun(l) },
+    { type: 'segment', key: 'solv', label: 'Solvent', options: [['aprotic', 'Acetone · aprotic'], ['protic', 'Water · protic']], onChange: l => resetRun(l) },
+    { type: 'html', html: `<div class="eyebrow">Which path is favoured?</div>
+        <div style="display:grid;grid-template-columns:34px 1fr 42px;gap:6px 8px;align-items:center;margin-top:8px;font-family:var(--mono);font-size:11.5px">
+          <span>SN2</span><div style="height:10px;border-radius:5px;background:#eee8dd;overflow:hidden"><i data-b="2" style="display:block;height:100%;background:#2f55c8;opacity:.75;border-radius:5px;transition:width .3s"></i></div><b data-v="2"></b>
+          <span>SN1</span><div style="height:10px;border-radius:5px;background:#eee8dd;overflow:hidden"><i data-b="1" style="display:block;height:100%;background:#a8433a;opacity:.75;border-radius:5px;transition:width .3s"></i></div><b data-v="1"></b>
+        </div><div class="ends" style="margin-top:6px"><span>A TEACHING SCORE FROM SUBSTRATE, NUCLEOPHILE AND SOLVENT</span></div>`,
+      update(box, l) {
+        const p = pSN2(l), w2 = Math.round(p * 100) + '%', w1 = Math.round((1 - p) * 100) + '%';
+        const b2 = box.querySelector('[data-b="2"]'), b1 = box.querySelector('[data-b="1"]');
+        if (b2.style.width !== w2) { b2.style.width = w2; b1.style.width = w1; box.querySelector('[data-v="2"]').textContent = w2; box.querySelector('[data-v="1"]').textContent = w1; }
+      } },
+    { type: 'button', label: l => l.anim.running && !l.batchLeft ? 'Running…' : 'Run reaction', disabled: l => l.anim.running,
+      onClick: l => startRun(l, false), chips: [{ key: 'slow', label: 'Slow motion' }, { key: 'pri', label: 'Show priorities' }] },
+    { type: 'button', dark: false, label: l => l.batchLeft ? `Running… ${21 - l.batchLeft} / 20` : 'Run 20 molecules', disabled: l => l.anim.running,
+      onClick: l => { l.tally = { R: 0, S: 0 }; l.batchLeft = 20; if (l.view === 'energy') l.view = 'products'; startRun(l, true); } },
+    { type: 'slider', label: 'Sketch — Model', min: 0, max: 1, ends: ['SKETCH', 'MODEL'], get: l => l.m, set: (l, v) => { l.m = v; } },
+    { type: 'segment', key: 'view', label: 'Notebook view', options: [['energy', 'Energy profile'], ['products', 'Products'], ['summary', 'Summary']] },
+  ],
+  challenges: [
+    { id: 'inv', text: 'Get at least 95 % inversion from 20 molecules of the 2° substrate', hint: 'Make SN2 as strong as possible.', test: l => l.sub === 's' && l.tally.R + l.tally.S >= 20 && l.tally.S / (l.tally.R + l.tally.S) >= 0.95 },
+    { id: 'rac', text: 'Make a racemic mixture (35–65 % S) from 20 molecules', hint: 'Which conditions push the 2° substrate towards SN1?', test: l => { const n = l.tally.R + l.tally.S; return l.sub === 's' && n >= 20 && l.tally.S / n > 0.35 && l.tally.S / n < 0.65; } },
+    { id: 'fast', text: 'Find conditions where SN2 is at least 95 % favoured, and run it', hint: 'Unhindered carbon, strong nucleophile, aprotic solvent.', test: l => pSN2(l) >= 0.95 && l.completed > 0 },
+    { id: 'block', text: 'React a substrate that cannot do SN2 at all', hint: 'Look at how crowded the back side is.', test: l => l.sub === 't' && l.completed > 0 },
+  ],
+  quiz: {
+    question: 'If (R)-2-bromobutane reacted <b>only by SN1</b>, what would you get?',
+    options: ['Only (S)-butan-2-ol', 'Only (R)-butan-2-ol', 'A racemic (±) mixture of both'], correct: 2,
+    right: '✓ Right. The carbocation is flat, so water attacks the front and back faces about equally and the product is racemic (optically inactive). <b>Test it:</b> choose 2°, H₂O and water, then run 20 molecules.',
+    wrong: '✗ Not quite. Complete inversion only happens in SN2, where there is no intermediate. In SN1 the flat carbocation can be attacked from either face.',
+  },
+});
+})();
+</script>
+</body>
+</html>

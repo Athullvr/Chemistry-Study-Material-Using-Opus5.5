@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class 12 Chemistry · Sketch to Chemistry guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="shared/studio.css">
+<style>
+  html,body{height:auto;min-height:100%}
+  body{background:#b98a5c;overflow-x:hidden}
+  #desk{position:fixed;inset:0;width:100%;height:100%;z-index:0}
+  .sheet{position:relative;z-index:1;max-width:1180px;margin:56px auto 70px;padding:46px 54px 50px;
+    background-color:#f3f0e8;background-size:cover;border-radius:3px;
+    box-shadow:0 30px 60px rgba(40,20,5,.35), 0 4px 12px rgba(40,20,5,.2);transform:rotate(-.25deg)}
+  @media (max-width:760px){ .sheet{margin:18px 10px;padding:26px 20px} }
+  .hand{font-family:"Caveat","Segoe Print",cursive}
+  .head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap}
+  .head h1{margin:6px 0 0;font-family:"Caveat",cursive;font-weight:700;font-size:64px;line-height:1;color:#34302c;letter-spacing:.5px}
+  .head .sub{font-family:"Caveat",cursive;font-size:27px;color:#8a8278;margin-top:6px}
+  .head .note{font-family:"Caveat",cursive;font-size:24px;color:#d9722b;transform:rotate(-2deg);max-width:300px;text-align:right}
+  .rule{height:2px;margin:22px 0 20px;background:repeating-linear-gradient(90deg,#34302c33 0 14px,transparent 14px 20px)}
+  .filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px}
+  .filters .chip::before{content:none}
+  .filters .chip{padding:7px 12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px}
+  .qcard{display:flex;flex-direction:column;background:rgba(251,249,245,.92);border:1px solid rgba(60,40,20,.12);border-radius:14px;
+    box-shadow:0 6px 18px rgba(40,20,5,.10);overflow:hidden;transition:transform .2s, box-shadow .2s;text-decoration:none;color:inherit}
+  a.qcard:hover{transform:translateY(-3px);box-shadow:0 14px 28px rgba(40,20,5,.16)}
+  .qcard canvas{display:block;width:100%;aspect-ratio:16/9;background:#f3f0e8;border-bottom:1px solid #e4ded3}
+  .qbody{padding:14px 16px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
+  .qbody h3{margin:2px 0 0;font-size:16.5px;font-weight:600;letter-spacing:-.01em;color:#2b2622}
+  .qbody p{margin:0;font-size:13.3px;line-height:1.5;color:#5d554c;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+  .tags span{font-family:var(--mono);font-size:10px;letter-spacing:.06em;padding:3px 7px;border-radius:20px;background:#f1ece2;color:#6d6459;border:1px solid #e4ded3}
+  .qfoot{display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:10px}
+  .qfoot .go{font-size:13px;font-weight:500;background:var(--espresso);color:#f6efe6;padding:7px 12px;border-radius:8px}
+  .foot{margin-top:28px;font-family:"Caveat",cursive;font-size:22px;color:#8a8278;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="desk"></canvas>
+<main class="sheet" id="sheet">
+  <div class="head">
+    <div>
+      <div class="eyebrow">Sketch to chemistry · NCERT Class 12</div>
+      <h1>Chemistry, drawn and explained</h1>
+      <div class="sub">Pick a question. Watch it come to life, then try it yourself.</div>
+    </div>
+    <div class="note">every lesson: a short guided tour → a live lab with challenges</div>
+  </div>
+  <div class="rule"></div>
+  <div class="filters" id="filters"></div>
+  <div class="grid" id="grid"></div>
+  <div class="foot">six questions · six units · each one drawn, explained and ready to try</div>
+</main>
+
+<script src="shared/catalog.js"></script>
+<script src="shared/studio.js"></script>
+<script>
+(() => {
+const { hand, sk, sphere, ellipsePts, arrowSk, hatch } = Studio.draw;
+const { INK, GRAY, ORANGE, BLUE } = Studio.C;
+const tex = Studio.textures();
+
+// ---------- desk background with window-blind light ----------
+const desk = document.getElementById('desk'), dctx = desk.getContext('2d');
+function paintDesk() {
+  const dpr = Math.min(devicePixelRatio || 1, 2), w = innerWidth, h = innerHeight;
+  desk.width = w * dpr; desk.height = h * dpr; dctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const s = Math.max(w / tex.desk.width, h / tex.desk.height) * 1.1;
+  dctx.drawImage(tex.desk, 0, 0, tex.desk.width * s, tex.desk.height * s);
+  dctx.save(); dctx.globalCompositeOperation = 'multiply'; dctx.translate(w / 2, h / 2); dctx.rotate(-0.42);
+  const bw = Math.max(w, h) * 0.12;
+  for (let i = -6; i <= 6; i++) {
+    const x = i * bw * 2.6, g = dctx.createLinearGradient(x - bw, 0, x + bw, 0);
+    g.addColorStop(0, 'rgba(105,72,40,0)'); g.addColorStop(0.5, 'rgba(105,72,40,0.28)'); g.addColorStop(1, 'rgba(105,72,40,0)');
+    dctx.fillStyle = g; dctx.fillRect(x - bw, -h * 1.5, bw * 2, h * 3);
+  }
+  dctx.restore();
+  const vg = dctx.createRadialGradient(w * .5, h * .45, Math.min(w, h) * .3, w * .5, h * .5, Math.max(w, h) * .8);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(40,20,5,0.35)');
+  dctx.fillStyle = vg; dctx.fillRect(0, 0, w, h);
+}
+paintDesk(); addEventListener('resize', paintDesk);
+document.getElementById('sheet').style.backgroundImage = `url(${tex.paper.toDataURL('image/jpeg', 0.85)})`;
+
+// ---------- pencil thumbnails (320 × 180 drawing space) ----------
+const ICONS = {
+  cell() {
+    for (const x0 of [30, 180]) sk([[x0, 80], [x0, 150], [x0 + 10, 160], [x0 + 100, 160], [x0 + 110, 150], [x0 + 110, 80]], x0, 1, { w: 1.8 });
+    hatch(() => { ctx.beginPath(); ctx.rect(180, 105, 110, 55); }, 180, 105, 290, 160, 9, 3, 1, 0.35, BLUE);
+    sk([[70, 50], [70, 150]], 11, 1, { w: 4, color: '#59616d' }); sk([[250, 50], [250, 150]], 12, 1, { w: 4, color: '#b8612f' });
+    sk([[115, 125], [115, 70], [205, 70], [205, 125]], 13, 1, { w: 1.6 });
+    sk([[70, 50], [70, 28], [140, 28]], 14, 1, { w: 1.4 }); sk([[180, 28], [250, 28], [250, 50]], 15, 1, { w: 1.4 });
+    sk([[140, 14], [180, 14], [180, 42], [140, 42], [140, 14]], 16, 1, { w: 1.6 });
+    hand('1.159 V', 160, 34, { size: 15, align: 'center', color: ORANGE });
+    hand('Zn', 70, 176, { size: 18, align: 'center' }); hand('Cu', 250, 176, { size: 18, align: 'center' });
+  },
+  osmosis() {
+    sk([[90, 30], [90, 140], [110, 160], [210, 160], [230, 140], [230, 30]], 21, 1, { w: 1.8 });
+    sk([[120, 30], [120, 132], [200, 132], [200, 30]], 22, 1, { w: 1.8 });
+    sk([[160, 132], [160, 160]], 23, 1, { w: 2, color: ORANGE, dash: [4, 4] });
+    hatch(() => { ctx.beginPath(); ctx.rect(90, 90, 30, 70); ctx.rect(90, 132, 140, 28); }, 90, 90, 230, 160, 9, 5, 1, 0.28, BLUE);
+    hatch(() => { ctx.beginPath(); ctx.rect(200, 62, 30, 70); }, 200, 62, 230, 132, 7, 7, 1, 0.4, BLUE);
+    sk([[248, 62], [248, 90]], 24, 1, { w: 1.5, color: ORANGE }); hand('h', 256, 82, { size: 20, color: ORANGE });
+    hand('membrane', 160, 176, { size: 16, align: 'center', color: GRAY }); hand('π = CRT', 40, 50, { size: 20, color: ORANGE });
+  },
+  kinetics() {
+    sk(ellipsePts(110, 115, 55, 50, 30, -1.1, Math.PI * 2 - 2.05), 31, 1, { w: 1.8 });
+    sk([[92, 68], [92, 28], [128, 28], [128, 68]], 32, 1, { w: 1.8 });
+    for (let i = 0; i < 16; i++) { const a = i * 2.4, r = 10 + (i % 5) * 7; sphere(110 + Math.cos(a) * r, 120 + Math.sin(a) * r * 0.8, 5, i % 3 === 0 ? '#c98a5a' : '#7c9fca', null, { shadow: false }); }
+    sk(ellipsePts(240, 90, 42, 42, 28), 33, 1, { w: 1.8 }); sk([[240, 90], [240, 60]], 34, 1, { w: 2 }); sk([[240, 90], [262, 104]], 35, 1, { w: 2, color: ORANGE });
+    hand('t½ = 0.693/k', 240, 160, { size: 18, align: 'center', color: ORANGE });
+  },
+  cft() {
+    const cx = 90, cy = 95;
+    for (const [dx, dy] of [[0, -55], [0, 55], [-55, 0], [55, 0], [-30, 22], [30, -22]]) { sk([[cx, cy], [cx + dx, cy + dy]], dx * 3 + dy, 1, { w: 1.5 }); sphere(cx + dx, cy + dy, 8, '#b56a5a', null, { shadow: false }); }
+    sphere(cx, cy, 12, '#8d99a8', null, { shadow: false });
+    sk([[180, 60], [210, 60]], 41, 1, { w: 3 }); sk([[214, 60], [244, 60]], 42, 1, { w: 3 });
+    for (const x of [175, 210, 245]) sk([[x, 125], [x + 28, 125]], 43 + x, 1, { w: 3 });
+    sk([[285, 125], [285, 60]], 44, 1, { w: 1.6, color: ORANGE }); hand('Δₒ', 292, 98, { size: 20, color: ORANGE });
+    hand('t₂g', 210, 150, { size: 18, align: 'center', color: GRAY }); hand('eg', 229, 45, { size: 18, align: 'center', color: GRAY });
+  },
+  sn2() {
+    const cx = 170, cy = 95;
+    sphere(cx, cy, 13, '#4a4744', 'C', { labelColor: '#eee', shadow: false });
+    for (const [dx, dy, c, r] of [[-38, -34, '#e9e4da', 8], [-38, 34, '#4a4744', 10], [-58, 0, '#4a4744', 10]]) { sk([[cx, cy], [cx + dx, cy + dy]], dx + dy, 1, { w: 2.5 }); sphere(cx + dx, cy + dy, r, c, null, { shadow: false }); }
+    sk([[cx, cy], [cx + 56, cy]], 51, 1, { w: 2, dash: [5, 5] }); sphere(cx + 70, cy, 14, '#8a4b3a', 'Br', { labelColor: '#fff', shadow: false });
+    sphere(cx - 130, cy, 12, '#b5584a', 'OH', { labelColor: '#fff', labelSize: 9, shadow: false });
+    arrowSk(cx - 115, cy - 6, cx - 72, cy - 4, 52, 1, ORANGE, 0.1);
+    hand('backside attack', 110, 160, { size: 18, color: ORANGE }); hand('R → S', 262, 50, { size: 20, color: GRAY });
+  },
+  dblock() {
+    // five 3d boxes with Co²⁺ spins (↑↓ ↑↓ ↑ ↑ ↑) and a horseshoe magnet
+    const spins = [[1, 1], [1, 1], [1, 0], [1, 0], [1, 0]];
+    spins.forEach(([u, d], i) => {
+      const x = 30 + i * 38;
+      sk([[x, 70], [x + 34, 70], [x + 34, 110], [x, 110], [x, 70]], 70 + i, 1, { w: 1.6 });
+      const ux = d ? x + 11 : x + 17;
+      if (u) { sk([[ux, 104], [ux, 76]], 80 + i, 1, { w: 2, color: INK, single: true }); sk([[ux - 5, 84], [ux, 76], [ux + 5, 84]], 85 + i, 1, { w: 2, color: INK, single: true }); }
+      if (d) { sk([[x + 23, 76], [x + 23, 104]], 90 + i, 1, { w: 2, color: '#3f4a63', single: true }); sk([[x + 18, 96], [x + 23, 104], [x + 28, 96]], 95 + i, 1, { w: 2, color: '#3f4a63', single: true }); }
+    });
+    hand('3d⁷', 125, 58, { size: 20, align: 'center', color: GRAY });
+    sk(ellipsePts(262, 95, 34, 40, 20, Math.PI * 0.15, Math.PI * 0.85 + Math.PI), 98, 1, { w: 7, color: '#8a4b3a' });
+    hand('μ = √15 = 3.87 BM', 120, 150, { size: 20, align: 'center', color: ORANGE });
+  },
+};
+let ctx;
+function drawThumb(cv, icon) {
+  const dpr = Math.min(devicePixelRatio || 1, 2), r = cv.getBoundingClientRect();
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  ctx = cv.getContext('2d'); Studio.useContext(ctx);
+  const s = r.width / 320;
+  ctx.setTransform(dpr * s, 0, 0, dpr * s, 0, 0);
+  ctx.drawImage(tex.paper, 400, 300, 320, 180, 0, 0, 320, 180);
+  ICONS[icon]?.();
+}
+
+// ---------- cards ----------
+const ALL = [...window.CATALOG].sort((a, b) => a.unitNo - b.unitNo);
+const units = [...new Map(ALL.map(q => [q.unitNo, q.unit])).entries()].sort((a, b) => a[0] - b[0]);
+let filter = 'all';
+
+function render() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  for (const q of ALL.filter(q => filter === 'all' || q.unitNo === filter)) {
+    const el = document.createElement('a');
+    el.className = 'qcard'; el.href = q.file;
+    el.innerHTML = `<canvas></canvas><div class="qbody">
+      <span class="eyebrow">Unit ${q.unitNo} · ${q.unit}</span>
+      <h3>${q.title}</h3><p>${q.q}</p>
+      <div class="tags">${(q.tags || []).map(t => `<span>${t}</span>`).join('')}</div>
+      <div class="qfoot"><span class="eyebrow">Tour + live lab</span><span class="go">Open lesson →</span></div>
+    </div>`;
+    grid.appendChild(el);
+    drawThumb(el.querySelector('canvas'), q.icon);
+  }
+  document.querySelectorAll('#filters .chip').forEach(c => c.classList.toggle('on', String(filter) === c.dataset.f));
+}
+const fbox = document.getElementById('filters');
+fbox.innerHTML = `<button class="chip" data-f="all">All units</button>` + units.map(([n, u]) => `<button class="chip" data-f="${n}">${n} · ${u}</button>`).join('');
+fbox.querySelectorAll('.chip').forEach(c => c.onclick = () => { filter = c.dataset.f === 'all' ? 'all' : +c.dataset.f; render(); });
+render();
+addEventListener('resize', () => document.querySelectorAll('.qcard canvas').forEach((cv, i) => drawThumb(cv, ALL.filter(q => filter === 'all' || q.unitNo === filter)[i].icon)));
+document.fonts && document.fonts.ready.then(render);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>First-Order Reactions · Sketch to Chemistry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/studio.css">
+</head>
+<body>
+<script src="../shared/catalog.js"></script>
+<script src="../shared/studio.js"></script>
+<script>
+(() => {
+const { clamp, S, Lr, lerp, easeOut, hash, SUP } = Studio.U;
+const { INK, GRAY, ORANGE, BLUE, SANS, MONO, HAND } = Studio.C;
+const { sk, hatch, hand, arrowSk, softEllipse, sphere, ringFx, tag, ellipsePts, sketchAxes } = Studio.draw;
+let ctx, TT, P;                        // set at the start of every draw()
+
+// ------------------------------------------------------------ chemistry
+const K0 = 1.15e-3, M0 = 5, TGT = 3;
+const tHalf = k => 0.693 / k;
+const tFor = (k, m0, m) => 2.303 / k * Math.log10(m0 / m);
+const massAt = (k, m0, t) => m0 * Math.exp(-k * t);
+const supNum = e => String(e).split('').map(ch => SUP[ch]).join('');
+function kfmt(k) {
+  let e = Math.floor(Math.log10(k)), m = k / Math.pow(10, e);
+  if (m >= 9.995) { m /= 10; e++; }
+  return `${m.toFixed(2)}×10${supNum(e)}`;
+}
+const fmtg = v => String(+v.toFixed(2));
+const fmtT = t => t < 100 ? t.toFixed(1) : String(Math.round(t));
+function niceUp(x) {
+  const p = Math.pow(10, Math.floor(Math.log10(x)));
+  for (const f of [1, 2, 5, 10]) if (f * p >= x - 1e-9) return f * p;
+  return 10 * p;
+}
+function niceStep(x) {
+  const p = Math.pow(10, Math.floor(Math.log10(x))), f = x / p;
+  return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p;
+}
+// simulated seconds in the tour (time is compressed; jumps back to 0 "refill" the flask)
+function tsim(t) {
+  if (t < 11) return 0;
+  if (t < 18) return 150 * Lr(t, 11.5, 17.5);
+  if (t < 22.5) return lerp(150, 444.3, S(t, 18.5, 22));
+  if (t < 23.5) return 444.3;
+  if (t < 26) return lerp(444.3, 900, Lr(t, 23.5, 26));
+  if (t < 33) return 1206 * Lr(t, 26.6, 32);
+  if (t < 40) return 444.3;
+  return 2400 * Lr(t, 40.5, 46.5);
+}
+
+// ------------------------------------------------------------ geometry
+const FX = 330, FY = 640, FR = 150, NW = 32, NTOP = 330, LIQ = 545;
+const HN = Math.sqrt(FR * FR - NW * NW);
+const A1 = Math.atan2(-HN, -NW), A2 = Math.atan2(-HN, NW);
+const WATCH = { x: 720, y: 360, r: 90 };
+function flaskPts() {
+  const pts = [[FX - NW - 8, NTOP - 6], [FX - NW, NTOP], [FX - NW, FY - HN]];
+  for (let i = 1; i <= 40; i++) { const a = lerp(A1, A2 - Math.PI * 2, i / 40); pts.push([FX + Math.cos(a) * FR, FY + Math.sin(a) * FR]); }
+  pts.push([FX + NW, NTOP], [FX + NW + 8, NTOP - 6]);
+  return pts;
+}
+const FLASK_PTS = flaskPts();
+function flaskPath() {
+  ctx.beginPath(); ctx.moveTo(FX - NW, NTOP); ctx.lineTo(FX - NW, FY - HN);
+  ctx.arc(FX, FY, FR, A1, A2, true); ctx.lineTo(FX + NW, NTOP);
+}
+
+// molecules: stratified exponential thresholds e (shuffled), so the fraction of A
+// left at "k·t" is exactly the fraction with e > k·t ≈ e^(−kt)
+const MOL = (() => {
+  const arr = [];
+  for (let k = 0; arr.length < 40 && k < 20000; k++) {
+    const x = FX + (hash(k * 2 + 5) - 0.5) * 250, y = 562 + hash(k * 2 + 6) * 215;
+    if (Math.hypot(x - FX, y - 650) > 120) continue;
+    if (arr.some(o => Math.hypot(o.x - x, o.y - y) < 25)) continue;
+    arr.push({ x, y, p1: hash(k * 7) * 6.28, p2: hash(k * 11) * 6.28, f1: .5 + hash(k * 3) * .8, f2: .5 + hash(k * 5) * .8 });
+  }
+  const order = arr.map((_, i) => i).sort((a, b) => hash(a * 13.7 + 1) - hash(b * 13.7 + 1));
+  order.forEach((idx, j) => Object.assign(arr[idx], { e: -Math.log((j + 0.5) / arr.length), a: 1, conv: false, bAt: -1e9, drift: hash(idx * 3.3) * 60 - 30 }));
+  return arr;
+})();
+const vA = { curve: 1, ln: 0, working: 0 };
+
+// ------------------------------------------------------------ drawing: molecules
+function molDraw(x, y, type, a, m) {
+  if (a <= 0.01) return;
+  const base = ctx.globalAlpha, r = type === 'A' ? 11 : 9;
+  const col = type === 'A' ? BLUE : ORANGE;
+  if (m < 1) {
+    ctx.globalAlpha = base * a * (1 - m * 0.85);
+    sk(ellipsePts(x, y, r, r, 14), x * 3 + y, 1, { w: 1.3, amp: 0.7, single: true, color: col });
+    ctx.font = `700 15px ${HAND}`; ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(type, x, y + 1);
+  }
+  if (m > 0) {
+    ctx.globalAlpha = base * a * m;
+    sphere(x, y, r, type === 'A' ? '#6d8fbd' : '#cf8a55', type, { labelColor: type === 'A' ? '#fff' : '#3b2410', labelSize: 11 });
+  }
+  ctx.globalAlpha = base;
+}
+function drawMolecules(kt, m, env) {
+  for (const o of MOL) {
+    const target = o.e > kt ? 1 : 0;
+    if (env.snap) { o.a = target; o.conv = target === 0; o.bAt = -1e9; }
+    else {
+      if (target === 0 && !o.conv) { o.conv = true; o.bAt = env.clock; }
+      if (target === 1) o.conv = false;
+      o.a = lerp(o.a, target, 1 - Math.exp(-env.rawDt * 10));
+    }
+    const x = o.x + 4 * Math.sin(o.f1 * env.clock + o.p1), y = o.y + 3 * Math.sin(o.f2 * env.clock * 1.1 + o.p2);
+    molDraw(x, y, 'A', o.a, m);
+    // B forms where A was, rises through the neck and escapes as a gas
+    const age = (env.clock - o.bAt) / 1.8;
+    if (o.conv && age > 0 && age < 1) {
+      ringFx(o.x, o.y, age * 3, ORANGE, 16);
+      let bx, by;
+      if (age < 0.35) { const k = easeOut(age / 0.35); bx = lerp(o.x, FX, k); by = lerp(o.y, 520, k); }
+      else if (age < 0.75) { const k = (age - 0.35) / 0.4; bx = FX + Math.sin(k * 6 + o.p1) * 8; by = lerp(520, 330, k); }
+      else { const k = (age - 0.75) / 0.25; bx = lerp(FX, FX + o.drift, k); by = lerp(330, 240, k); }
+      molDraw(bx, by, 'B', Math.min(1, age * 8) * (1 - S(age, 0.8, 1)), m);
+    }
+  }
+}
+
+// ------------------------------------------------------------ drawing: apparatus
+function drawSketch(v) {
+  sk(FLASK_PTS, 11, P(0.4, 1.6), { w: 2 });
+  const lp = P(1.6, 2.2), dx = Math.sqrt(FR * FR - (FY - LIQ) ** 2);
+  const liq = []; for (let x = FX - dx + 4; x <= FX + dx - 4; x += 18) liq.push([x, LIQ + Math.sin(x * 0.06) * 2]);
+  sk(liq, 21, lp, { w: 1.4 });
+  hatch(() => { flaskPath(); ctx.closePath(); }, FX - FR, LIQ, FX + FR, FY + FR, 26, 5, lp, 0.15);
+  // balance
+  const bp = P(2.0, 3.0);
+  sk([[130, 830], [530, 830], [530, 905], [130, 905], [130, 830]], 31, bp, { w: 1.9 });
+  sk([[248, 848], [412, 848], [412, 886], [248, 886], [248, 848]], 33, bp, { w: 1.4 });
+  sk(ellipsePts(FX, 806, 150, 16, 30), 35, bp, { w: 1.6 });
+  sk([[FX, 822], [FX, 830]], 37, bp, { w: 1.6 });
+  if (bp >= 1) hand(massAt(v.k, v.m0, v.ts).toFixed(2) + ' g', FX, 878, { size: 30, align: 'center' });
+  // stopwatch
+  const wp = P(3.0, 4.0), W = WATCH;
+  sk(ellipsePts(W.x, W.y, W.r, W.r, 34), 41, wp, { w: 2 });
+  sk(ellipsePts(W.x, W.y, W.r - 9, W.r - 9, 34), 43, wp, { w: 1.2 });
+  sk([[W.x - 10, W.y - W.r], [W.x - 10, W.y - W.r - 18], [W.x + 10, W.y - W.r - 18], [W.x + 10, W.y - W.r]], 45, wp, { w: 1.6 });
+  if (wp >= 1) {
+    const ang = -Math.PI / 2 + Math.PI * 2 * (v.ts / v.rev);
+    sk([[W.x, W.y], [W.x + Math.cos(ang) * (W.r - 18), W.y + Math.sin(ang) * (W.r - 18)]], 47, 1, { w: 2.2, single: true });
+  }
+}
+function drawBalanceModel(mass) {
+  softEllipse(FX + 20, 912, 250, 20, 0.28);
+  ctx.fillStyle = '#b8ad99'; ctx.beginPath(); ctx.roundRect(126, 826, 408, 84, 16); ctx.fill();
+  const body = ctx.createLinearGradient(0, 830, 0, 906); body.addColorStop(0, '#f1ece2'); body.addColorStop(1, '#dcd3c3');
+  ctx.fillStyle = body; ctx.beginPath(); ctx.roundRect(130, 830, 400, 76, 14); ctx.fill();
+  ctx.fillStyle = '#3b3631'; ctx.beginPath(); ctx.roundRect(240, 842, 180, 50, 8); ctx.fill();
+  const lcd = ctx.createLinearGradient(0, 848, 0, 886); lcd.addColorStop(0, '#c4cfae'); lcd.addColorStop(1, '#a9b692');
+  ctx.fillStyle = lcd; ctx.beginPath(); ctx.roundRect(248, 848, 164, 38, 5); ctx.fill();
+  ctx.fillStyle = '#1e2518'; ctx.font = `700 26px ${MONO}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(mass.toFixed(2) + ' g', FX, 868);
+  ctx.fillStyle = '#7d7466'; ctx.font = `600 10px ${MONO}`; ctx.fillText('MASS OF A', 185, 868); ctx.fillText('TARED', 475, 868);
+  ctx.fillStyle = '#8c8577'; ctx.fillRect(FX - 12, 806, 24, 26);
+  const pan = ctx.createLinearGradient(FX - 150, 0, FX + 150, 0); pan.addColorStop(0, '#9aa1a9'); pan.addColorStop(0.4, '#e4e7ea'); pan.addColorStop(1, '#8f969e');
+  ctx.fillStyle = pan; ctx.beginPath(); ctx.ellipse(FX, 806, 150, 16, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(80,86,94,0.6)'; ctx.lineWidth = 1.5; ctx.stroke();
+}
+function drawFlaskBack() {
+  softEllipse(FX + 25, 796, 120, 12, 0.25);
+  flaskPath(); ctx.closePath(); ctx.fillStyle = 'rgba(225,238,244,0.25)'; ctx.fill();
+  ctx.save(); flaskPath(); ctx.closePath(); ctx.clip();
+  const g = ctx.createLinearGradient(FX - FR, 0, FX + FR, 0);
+  g.addColorStop(0, 'rgba(170,190,205,0.45)'); g.addColorStop(0.5, 'rgba(205,218,228,0.3)'); g.addColorStop(1, 'rgba(170,190,205,0.5)');
+  ctx.fillStyle = g; ctx.fillRect(FX - FR, LIQ, FR * 2, FR * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(FX - FR, LIQ); ctx.lineTo(FX + FR, LIQ); ctx.stroke();
+  ctx.restore();
+}
+function drawFlaskFront() {
+  flaskPath(); ctx.strokeStyle = 'rgba(95,115,125,0.65)'; ctx.lineWidth = 3; ctx.lineJoin = 'round'; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(FX, NTOP, NW + 7, 6, 0, 0, Math.PI * 2); ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 7; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(FX, FY, FR - 16, Math.PI * 1.08, Math.PI * 1.38); ctx.stroke();
+  ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(FX - NW + 8, NTOP + 20); ctx.lineTo(FX - NW + 8, FY - HN - 10); ctx.stroke();
+}
+function drawWatchModel(ts, rev) {
+  const W = WATCH;
+  softEllipse(W.x + 14, W.y + 18, W.r + 12, W.r + 4, 0.22);
+  ctx.fillStyle = '#8f969e'; ctx.fillRect(W.x - 10, W.y - W.r - 22, 20, 18);
+  ctx.fillStyle = '#b5bbc2'; ctx.beginPath(); ctx.roundRect(W.x - 17, W.y - W.r - 30, 34, 11, 4); ctx.fill();
+  const ring = ctx.createRadialGradient(W.x - 30, W.y - 35, 10, W.x, W.y, W.r);
+  ring.addColorStop(0, '#eef0f2'); ring.addColorStop(0.7, '#b9bfc6'); ring.addColorStop(1, '#858c94');
+  ctx.fillStyle = ring; ctx.beginPath(); ctx.arc(W.x, W.y, W.r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#f7f3ea'; ctx.beginPath(); ctx.arc(W.x, W.y, W.r - 9, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#5d554c';
+  for (let i = 0; i < 50; i++) {
+    const a = -Math.PI / 2 + Math.PI * 2 * i / 50, major = i % 5 === 0, r1 = W.r - 12, r2 = r1 - (major ? 11 : 5);
+    ctx.lineWidth = major ? 2 : 1;
+    ctx.beginPath(); ctx.moveTo(W.x + Math.cos(a) * r1, W.y + Math.sin(a) * r1); ctx.lineTo(W.x + Math.cos(a) * r2, W.y + Math.sin(a) * r2); ctx.stroke();
+  }
+  ctx.fillStyle = '#5d554c'; ctx.font = `600 12px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 10; i += 2) {
+    const a = -Math.PI / 2 + Math.PI * 2 * i / 10, v = rev * i / 10;
+    ctx.fillText(v >= 1000 ? (v / 1000) + 'k' : String(+v.toFixed(1)), W.x + Math.cos(a) * (W.r - 36), W.y + Math.sin(a) * (W.r - 36));
+  }
+  ctx.fillStyle = '#948b80'; ctx.font = `600 9px ${MONO}`; ctx.fillText('SECONDS', W.x, W.y + 26);
+  const ang = -Math.PI / 2 + Math.PI * 2 * (ts / rev);
+  ctx.strokeStyle = '#a8433a'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(W.x - Math.cos(ang) * 14, W.y - Math.sin(ang) * 14); ctx.lineTo(W.x + Math.cos(ang) * (W.r - 16), W.y + Math.sin(ang) * (W.r - 16)); ctx.stroke();
+  ctx.fillStyle = '#3b3631'; ctx.beginPath(); ctx.arc(W.x, W.y, 5, 0, Math.PI * 2); ctx.fill();
+}
+
+// ------------------------------------------------------------ notebook views
+const BOX = { x0: 1110, y0: 260, x1: 1500, y1: 740 };
+function drawCurve(a, v) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const { k, m0, target, ts } = v, tmax = v.tmax, ymax = m0 * 1.1;
+  hand('mass of A vs time', 1070, 205, { size: 40 });
+  const xs = niceStep(tmax / 5), xt = [], yt = [];
+  for (let x = 0; x <= tmax + 1e-6; x += xs) xt.push(+x.toFixed(4));
+  for (let y = 0; y <= ymax + 1e-6; y += (m0 > 6 ? 2 : 1)) yt.push(y);
+  const { X, Y } = sketchAxes(BOX, { xmin: 0, xmax: tmax, ymin: 0, ymax }, { xlabel: 't (s)', ylabel: 'mass of A (g)', xticks: xt, yticks: yt, seed: 1101, xfmt: x => x >= 10000 ? (x / 1000) + 'k' : String(+x.toFixed(1)) });
+  const full = []; for (let i = 0; i <= 60; i++) { const t = tmax * i / 60; full.push([X(t), Y(massAt(k, m0, t))]); }
+  sk(full, 1111, 1, { w: 1, color: GRAY, dash: [4, 8], single: true, amp: 0.3 });
+  const tl = Math.min(ts, tmax);
+  if (tl > 0) {
+    const N = Math.max(2, Math.ceil(60 * tl / tmax)), live = [];
+    for (let i = 0; i <= N; i++) { const t = tl * i / N; live.push([X(t), Y(massAt(k, m0, t))]); }
+    sk(live, 1121, 1, { w: 2.4, amp: 0.4 });
+  }
+  if (v.showHalf) {
+    const th = tHalf(k);
+    for (let n = 1; n <= 2; n++) {
+      if (n * th > tmax || ts < n * th) continue;
+      const mm = m0 / Math.pow(2, n), px = X(n * th), py = Y(mm), p0 = X((n - 1) * th);
+      sk([[X(0), py], [px, py]], 1130 + n, 1, { w: 1, color: GRAY, dash: [5, 6], single: true });
+      sk([[px, py], [px, Y(0)]], 1140 + n, 1, { w: 1, color: GRAY, dash: [5, 6], single: true });
+      hand(`${fmtg(mm)} g`, X(0) + 8, py - 8, { size: 21, color: ORANGE });
+      const ya = Y(0) - 22 - (n - 1) * 0;
+      sk([[p0 + 4, ya], [px - 4, ya]], 1150 + n, 1, { w: 1.6, color: ORANGE, single: true });
+      sk([[p0 + 4, ya - 6], [p0 + 4, ya + 6]], 1160 + n, 1, { w: 1.6, color: ORANGE, single: true });
+      sk([[px - 4, ya - 6], [px - 4, ya + 6]], 1170 + n, 1, { w: 1.6, color: ORANGE, single: true });
+      hand(`t½ = ${fmtT(th)} s`, (p0 + px) / 2, ya - 10, { size: 20, color: ORANGE, align: 'center' });
+    }
+  }
+  if (v.showTarget) {
+    const tT = tFor(k, m0, target);
+    if (tT <= tmax && ts >= tT - 0.5) {
+      const px = X(tT), py = Y(target);
+      sk([[X(0), py], [px, py]], 1181, 1, { w: 1.2, color: ORANGE, dash: [6, 6], single: true });
+      sk([[px, py], [px, Y(0)]], 1183, 1, { w: 1.2, color: ORANGE, dash: [6, 6], single: true });
+      hand(`${fmtg(target)} g`, X(0) + 8, py - 8, { size: 22, color: ORANGE });
+      hand(`${fmtT(tT)} s`, px + 8, py + 26, { size: 22, color: ORANGE });
+    }
+  }
+  if (tl >= 0) {
+    const cx = X(tl), cy = Y(massAt(k, m0, tl));
+    ctx.fillStyle = ORANGE; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#f3f0e8'; ctx.lineWidth = 3; ctx.stroke();
+    const right = cx < 1390;
+    hand(massAt(k, m0, tl).toFixed(2) + ' g', cx + (right ? 14 : -14), cy - 14, { size: 26, color: ORANGE, align: right ? 'left' : 'right' });
+  }
+  ctx.globalAlpha = b;
+}
+function drawLn(a, v) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const { k, m0, ts } = v, tmax = v.tmax, L0 = Math.log(m0), Lm = L0 - k * tmax;
+  const ymin = Math.floor((Lm - 0.2) * 2) / 2, ymax = Math.ceil((L0 + 0.2) * 2) / 2;
+  const ystep = ymax - ymin > 4 ? 1 : 0.5, xs = niceStep(tmax / 5), xt = [], yt = [];
+  for (let x = 0; x <= tmax + 1e-6; x += xs) xt.push(+x.toFixed(4));
+  for (let y = Math.ceil(ymin / ystep) * ystep; y <= ymax + 1e-6; y += ystep) yt.push(+y.toFixed(2));
+  hand('ln (mass of A) vs time', 1070, 205, { size: 40 });
+  const { X, Y } = sketchAxes(BOX, { xmin: 0, xmax: tmax, ymin, ymax }, { xlabel: 't (s)', ylabel: 'ln [A]', xticks: xt, yticks: yt, seed: 1201,
+    xfmt: x => x >= 10000 ? (x / 1000) + 'k' : String(+x.toFixed(1)), yfmt: y => (y < 0 ? '−' : '') + Math.abs(y).toFixed(1) });
+  const Lt = t => L0 - k * t;
+  sk([[X(0), Y(L0)], [X(tmax), Y(Lm)]], 1211, 1, { w: 1, color: GRAY, dash: [4, 8], single: true });
+  const tl = Math.min(ts, tmax);
+  if (tl > 0) sk([[X(0), Y(L0)], [X(tl), Y(Lt(tl))]], 1221, 1, { w: 2.4, amp: 0.5 });
+  const t1 = 0.2 * tmax, t2 = 0.55 * tmax;
+  if (TT === null || tl >= t2) {
+    sk([[X(t1), Y(Lt(t1))], [X(t2), Y(Lt(t1))], [X(t2), Y(Lt(t2))]], 1231, 1, { w: 1.8, color: ORANGE });
+    hand('Δt', (X(t1) + X(t2)) / 2, Y(Lt(t1)) - 8, { size: 22, color: ORANGE, align: 'center' });
+    hand('Δ ln[A]', X(t2) + 8, (Y(Lt(t1)) + Y(Lt(t2))) / 2 + 6, { size: 22, color: ORANGE });
+    hand(`slope = −k = −${kfmt(k)} s⁻¹`, X(t1) - 20, Y(Lt(t1)) - 44, { size: 25, color: ORANGE });
+  }
+  const cx = X(tl), cy = Y(Lt(tl));
+  ctx.fillStyle = ORANGE; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#f3f0e8'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.globalAlpha = b;
+}
+function drawWorking(a, v) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const { k, m0, target } = v, X = 1070, sz = 32;
+  const lg = Math.log10(m0 / target), t = tFor(k, m0, target), th = tHalf(k);
+  hand('integrated rate law (first order)', X, 205, { size: 36, color: GRAY, prog: P(33.4, 34.0) });
+  hand('t = (2.303 / k) × log([A]₀ / [A])', X, 265, { size: sz, prog: P(33.8, 34.8) });
+  hand(`   = (2.303 / ${kfmt(k)}) × log(${fmtg(m0)} / ${fmtg(target)})`, X, 320, { size: sz, prog: P(34.8, 35.8) });
+  hand(`   = ${Math.round(2.303 / k)} × ${lg.toFixed(4)}`, X, 375, { size: sz, prog: P(35.8, 36.6) });
+  const fin = P(36.8, 37.4);
+  if (fin > 0) {
+    const w = hand(`t ≈ ${fmtT(t)} s`, X + 20, 460, { size: 52, color: ORANGE, prog: fin, weight: 700 });
+    const cp = P(37.2, 37.7);
+    if (cp > 0) sk(ellipsePts(X + 20 + w / 2, 444, w / 2 + 28, 40, 30, -2.2, -2.2 + Math.PI * 2.15), 1301, cp, { w: 2.2, color: ORANGE });
+  }
+  hand('half-life:  t½ = 0.693 / k', X, 555, { size: sz, prog: P(38.0, 38.6) });
+  hand(`   = 0.693 / ${kfmt(k)} = ${fmtT(th)} s`, X, 605, { size: sz, prog: P(38.6, 39.2) });
+  hand('grams are fine: only the ratio [A]₀ / [A] matters', X, 680, { size: 24, color: GRAY, prog: P(39.2, 39.8) });
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ tour notes
+function note(t, t0, t1, tOut, fn) {
+  if (t < t0 || t > tOut + 0.6) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * (1 - S(t, tOut, tOut + 0.6));
+  fn(Lr(t, t0, t1)); ctx.globalAlpha = b;
+}
+function drawTourNotes(t) {
+  note(t, 4.9, 5.4, 10.5, p => { hand('A molecules', 600, 745, { size: 32, color: ORANGE, align: 'center', prog: p }); arrowSk(560, 735, 450, 700, 1401, p); });
+  note(t, 5.1, 5.6, 10.5, p => { hand('gas B escapes', 470, 292, { size: 30, color: ORANGE, prog: p }); arrowSk(465, 296, 372, 322, 1403, p); });
+  note(t, 5.3, 5.8, 10.5, p => { hand('balance', 620, 885, { size: 30, color: ORANGE, align: 'center', prog: p }); arrowSk(575, 878, 535, 868, 1405, p, ORANGE, 0.1); });
+  note(t, 5.5, 6.0, 10.5, p => { hand('stopwatch', 900, 330, { size: 30, color: ORANGE, align: 'center', prog: p }); arrowSk(860, 340, 815, 360, 1407, p); });
+  note(t, 11.8, 12.8, 17.6, p => { hand('every A has the same chance', 500, 625, { size: 27, color: ORANGE, prog: p }); hand('of reacting in each second', 500, 657, { size: 27, color: ORANGE, prog: p }); });
+  note(t, 13.2, 14.0, 17.6, p => { hand('k = 1.15×10⁻³ s⁻¹', 500, 715, { size: 27, color: INK, prog: p }); hand('≈ 0.115 % of A per second', 500, 747, { size: 24, color: GRAY, prog: p }); });
+  note(t, 14.8, 15.6, 17.6, p => { hand('more A → more pops each second', 500, 800, { size: 25, color: ORANGE, prog: p }); hand('rate = k[A]', 500, 832, { size: 27, color: INK, prog: p }); });
+  note(t, 19.5, 20.5, 25.6, p => hand('fast at first, then slower and slower…', 1070, 890, { size: 26, color: ORANGE, prog: p }));
+  note(t, 22.2, 23.0, 25.6, p => hand('5 g → 3 g takes about 444 s', 1070, 928, { size: 26, color: INK, prog: p }));
+  note(t, 27.5, 28.5, 32.6, p => hand('every halving takes the same 603 s', 1070, 890, { size: 26, color: ORANGE, prog: p }));
+  note(t, 30.5, 31.5, 32.6, p => hand('…no matter how much A you start with', 1070, 928, { size: 26, color: GRAY, prog: p }));
+  note(t, 43.5, 44.5, 46.8, p => hand('a straight line → it is first order', 1070, 890, { size: 26, color: ORANGE, prog: p }));
+  note(t, 47.3, 48.2, 60, p => { hand('your turn', 1380, 940, { size: 54, color: ORANGE, prog: p, weight: 700, align: 'center' }); arrowSk(1470, 925, 1580, 900, 1409, p); });
+}
+
+// ------------------------------------------------------------ lesson config
+const viewOf = (st, lab) => lab
+  ? (() => { const th = tHalf(lab.k), tT = tFor(lab.k, lab.m0, lab.target), tmax = niceUp(Math.max(3 * th, tT * 1.25, lab.ts * 1.02, 1));
+      return { k: lab.k, m0: lab.m0, target: lab.target, ts: lab.ts, tmaxC: tmax, tmaxL: tmax, rev: niceUp(th * 1.25), showTarget: true, showHalf: true }; })()
+  : { k: st.k, m0: st.m0, target: st.target, ts: st.ts, tmaxC: 1800, tmaxL: 2400, rev: 1000, showTarget: st.showTarget, showHalf: st.showHalf };
+
+Studio.lesson({
+  id: 'first-order',
+  unit: 'Unit 3 · Chemical Kinetics',
+  title: 'The First-Order Clock',
+  headline: 'A → B · first order',
+  panelEyebrow: 'Kinetics lab',
+  intro: 'A flask of molecules that react one by one, at random. See why the mass falls fast then slow, why the half-life never changes, and solve the class problem.',
+  welcome: { title: 'How long does a reaction take?', text: 'Press Play the tour for a 50-second guided story, or jump straight into the lab.', formula: 't = (2.303 / k) · log([A]₀ / [A])' },
+  problem: {
+    html: 'A first order reaction has a rate constant <span class="cell">k = 1.15 × 10⁻³ s⁻¹</span>How long will <b>5 g</b> of this reactant take to reduce to <b>3 g</b>?',
+    answer: 't = (2.303 / k)·log(5/3) = 2003 × 0.2218 ≈ 444 s', revealAt: 37.4, revealChapter: 'SOLVE',
+  },
+  tourEnd: 50,
+  introT: 6,
+  chapters: [
+    { t: 0, key: 'SKETCH', title: 'A reaction on paper', text: 'A flask of reactant A that slowly turns into gas B, which escapes. The balance under the flask shows how much A is left, and the stopwatch keeps time.', formula: 'A → B (gas)' },
+    { t: 6, key: 'BUILD', title: 'Brought to life', text: 'Every blue sphere is a molecule of A. Each one will react sooner or later, but nobody can say exactly when.', formula: 'mass of A at t = 0 : 5.00 g' },
+    { t: 11, key: 'RANDOM', title: 'Same chance, every second', text: 'In a first-order reaction every A molecule has the same small chance of reacting in each second: k = 1.15 × 10⁻³ s⁻¹, about 0.115 % per second. More A means more molecules react each second, so rate = k[A].', formula: 'rate = k [A]' },
+    { t: 18, key: 'CURVE', title: 'Fast at first, then slower', text: 'As A runs out there are fewer molecules left to react, so the mass falls more and more slowly. The curve is an exponential decay, and 5 g reaches 3 g after about 444 s.', formula: '[A] = [A]₀ · e^(−kt)' },
+    { t: 26, key: 'HALF-LIFE', title: 'Halving in equal steps', text: 'Start again. After 603 s half of the A is gone (5 → 2.5 g). After another 603 s half of the rest is gone (2.5 → 1.25 g). A first-order half-life does not depend on how much you start with.', formula: 't½ = 0.693 / k = 603 s' },
+    { t: 33, key: 'SOLVE', title: 'Now the class problem', text: 'Use the integrated rate law with [A]₀ = 5 g and [A] = 3 g. Grams work because only the ratio [A]₀/[A] matters.', formula: 't = (2.303 / k) · log(5/3) ≈ 444 s' },
+    { t: 40, key: 'STRAIGHT', title: 'The straight-line test', text: 'Plot ln[A] against time and a first-order reaction gives a straight line with slope −k. This is how chemists recognise first-order kinetics in experimental data.', formula: 'ln[A] = ln[A]₀ − k t' },
+    { t: 47, key: 'YOUR TURN', title: 'Your turn', text: 'Change k and the masses, run the clock, switch notebook views, and try to complete all four challenges.', formula: '' },
+  ],
+  camera: [[0, 800, 500, 1], [6, 800, 500, 1], [8.5, 600, 545, 1.15], [11, 600, 545, 1.15], [12.5, 400, 650, 2.0], [17.3, 400, 650, 2.0],
+    [18.8, 800, 510, 1], [32.5, 800, 510, 1], [34, 1270, 470, 1.45], [39.6, 1270, 470, 1.45], [41, 800, 510, 1], [99, 800, 510, 1]],
+  tourState(t) {
+    return {
+      ts: tsim(t), k: K0, m0: M0, target: TGT, m: S(t, 6.5, 9.5),
+      views: { curve: S(t, 18, 18.8) * (1 - S(t, 32.6, 33.2)), working: S(t, 33.2, 34) * (1 - S(t, 39.6, 40.2)), ln: S(t, 40.2, 41) },
+      showTarget: t >= 21.5 && t < 26, showHalf: t >= 26.5 && t < 33,
+    };
+  },
+  initLab: () => ({ k: K0, m0: M0, target: TGT, ts: 0, running: false, speed: 50, slow: false, m: 1, view: 'curve' }),
+  step(lab, dt) {
+    if (!lab.running) return;
+    lab.ts += dt * lab.speed;
+    if (Math.exp(-lab.k * lab.ts) < 1e-4) lab.running = false;
+  },
+  draw(env) {
+    ctx = env.ctx; TT = env.TT; P = env.P;
+    const lab = env.mode === 'lab' ? env.lab : null, st = env.st;
+    const v = viewOf(st, lab), m = lab ? lab.m : st.m;
+    if (lab) for (const k in vA) vA[k] = env.snap ? (k === lab.view ? 1 : 0) : lerp(vA[k], k === lab.view ? 1 : 0, 1 - Math.exp(-env.rawDt * 7));
+    const views = lab ? vA : st.views, mass = massAt(v.k, v.m0, v.ts);
+
+    hand('First-order reaction', 60, 100, { size: 50, prog: P(3.8, 4.8), weight: 700 });
+    hand(`A → B(g),   k = ${kfmt(v.k)} s⁻¹`, 62, 140, { size: 28, color: GRAY, prog: P(4.4, 5.2) });
+
+    ctx.globalAlpha = 1 - 0.82 * m; drawSketch(v); ctx.globalAlpha = 1;
+    const tipAfterSketch = Studio.pencilTip;
+    if (m > 0) { ctx.globalAlpha = m; drawBalanceModel(mass); drawFlaskBack(); ctx.globalAlpha = 1; }
+    ctx.globalAlpha = P(4.0, 4.8); drawMolecules(v.k * v.ts, m, env); ctx.globalAlpha = 1;
+    if (m > 0) { ctx.globalAlpha = m; drawFlaskFront(); drawWatchModel(v.ts, v.rev); ctx.globalAlpha = 1; }
+    const tagA = TT === null ? 1 : S(TT, 8.5, 9.5);
+    if (tagA > 0) {
+      ctx.globalAlpha = tagA;
+      hand(`t = ${Math.round(v.ts)} s`, WATCH.x, WATCH.y + WATCH.r + 50, { size: 34, align: 'center' });
+      ctx.globalAlpha = 1;
+      tag(WATCH.x, WATCH.y + WATCH.r + 95, `k = ${kfmt(v.k)} s⁻¹`, { color: BLUE, alpha: tagA });
+    }
+    drawCurve(views.curve, { ...v, tmax: v.tmaxC });
+    drawLn(views.ln, { ...v, tmax: v.tmaxL });
+    drawWorking(views.working, v);
+    if (env.mode === 'tour') drawTourNotes(TT);
+    if (lab) {
+      const frac = Math.exp(-lab.k * lab.ts);
+      hand(lab.running ? 'reacting: B escapes as a gas, the balance drops' : lab.ts === 0 ? 'press Start the reaction to run the clock' : frac < 1e-4 ? 'all the A has reacted' : 'paused',
+        FX, 958, { size: 26, color: ORANGE, align: 'center' });
+    }
+    Studio.pencilTip = tipAfterSketch || Studio.pencilTip;
+  },
+  stats: [{ id: 't', label: 'TIME' }, { id: 'h', label: 'HALF-LIFE' }, { id: 'f', label: 'A LEFT' }, { id: 'k', label: 'k (s⁻¹)' }],
+  statValues(st) {
+    const frac = Math.exp(-st.k * st.ts);
+    return { t: `${Math.round(st.ts)}<small>s</small>`, h: `${fmtT(tHalf(st.k))}<small>s</small>`, f: `${(frac * 100).toFixed(1)}<small>%</small>`, k: kfmt(st.k) };
+  },
+  now(st, lab) {
+    const th = tHalf(lab.k), tT = tFor(lab.k, lab.m0, lab.target), frac = Math.exp(-lab.k * lab.ts);
+    let title, text;
+    if (frac < 1e-4) { title = 'All the A has reacted'; text = `After about ${fmtT(13.3 * th)} s (more than 13 half-lives) less than 0.01 % of A is left. In theory an exponential never reaches zero; in practice it is gone.`; }
+    else if (lab.ts === 0) { title = 'Ready: press Start'; text = `With k = ${kfmt(lab.k)} s⁻¹, half of the A will be gone after <b>${fmtT(th)} s</b>, and ${fmtg(lab.m0)} g will reach ${fmtg(lab.target)} g after <b>${fmtT(tT)} s</b>. Start the clock and check the prediction.`; }
+    else if (lab.ts >= tT) { title = 'Target reached'; text = `The balance passed ${fmtg(lab.target)} g at ${fmtT(tT)} s, exactly as t = (2.303/k) log([A]₀/[A]) predicted. ${(frac * 100).toFixed(1)} % of the A is left.`; }
+    else if (lab.running) { title = 'Reacting…'; text = `Each second about ${(lab.k * 100).toPrecision(2)} % of the <i>remaining</i> A reacts. The mass falls fast at first and more slowly later, because fewer molecules are left to react.`; }
+    else { title = 'Paused'; text = `${(frac * 100).toFixed(1)} % of the A is left after ${Math.round(lab.ts)} s. Press Resume to continue.`; }
+    return { title, text, formula: `t = (2.303 / ${kfmt(lab.k)}) × log(${fmtg(lab.m0)} / ${fmtg(lab.target)}) = ${fmtT(tT)} s   ·   t½ = ${fmtT(th)} s` };
+  },
+  controls: [
+    { type: 'slider', label: 'Rate constant k', min: -4, max: -1.52, ends: ['SLOW', 'FAST'],
+      get: l => Math.log10(l.k), set: (l, v) => { l.k = Math.pow(10, v); l.ts = 0; l.running = false; }, show: l => kfmt(l.k) + ' s⁻¹' },
+    { type: 'slider', label: 'Starting mass [A]₀', min: 1, max: 10, step: 0.5, ends: ['1 g', '10 g'],
+      get: l => l.m0, set: (l, v) => { l.m0 = v; if (l.target >= v) l.target = +(v * 0.6).toFixed(1); l.ts = 0; l.running = false; }, show: l => fmtg(l.m0) + ' g' },
+    { type: 'slider', label: 'Target mass [A]', min: 0.1, max: 9.9, step: 0.1, ends: ['0.1 g', '9.9 g'],
+      get: l => l.target, set: (l, v) => { l.target = +Math.min(v, l.m0 - 0.1).toFixed(1); }, show: l => fmtg(l.target) + ' g' },
+    { type: 'button', label: l => l.running ? 'Pause the reaction' : (l.ts > 0 && Math.exp(-l.k * l.ts) >= 1e-4 ? 'Resume the reaction' : 'Start the reaction'),
+      onClick: l => { if (Math.exp(-l.k * l.ts) < 1e-4) l.ts = 0; l.running = !l.running; },
+      chips: [{ key: 'slow', label: 'Slow motion' }] },
+    { type: 'button', dark: false, label: 'Reset clock', onClick: l => { l.ts = 0; l.running = false; } },
+    { type: 'slider', label: 'Clock speed', min: 1, max: 2.3, ends: ['×10', '×200'], get: l => Math.log10(l.speed), set: (l, v) => { l.speed = Math.pow(10, v); }, show: l => '×' + Math.round(l.speed) },
+    { type: 'slider', label: 'Sketch — Model', min: 0, max: 1, ends: ['SKETCH', 'MODEL'], get: l => l.m, set: (l, v) => { l.m = v; } },
+    { type: 'segment', key: 'view', label: 'Notebook view', options: [['curve', '[A] vs t'], ['ln', 'ln[A] vs t'], ['working', 'Working']] },
+  ],
+  challenges: [
+    { id: 'half', text: 'Set the half-life to 60 s (±1 s)', hint: 'Hint: t½ = 0.693 / k. What k gives 60 s?', test: l => Math.abs(tHalf(l.k) - 60) < 1 },
+    { id: 'fast', text: 'Reach the target mass in under 100 s of reaction time', hint: 'Run the clock: a bigger k, or a target close to the start.', test: l => { const tT = tFor(l.k, l.m0, l.target); return tT < 100 && l.ts >= tT && l.ts > 0; } },
+    { id: 'quarter', text: 'Run the reaction until only 25 % of A is left', hint: 'That is exactly two half-lives.', test: l => l.ts > 0 && Math.exp(-l.k * l.ts) <= 0.25 },
+    { id: 'one', text: 'Let A fall below 1 %', hint: 'About 6.6 half-lives. Turn up the clock speed.', test: l => l.ts > 0 && Math.exp(-l.k * l.ts) < 0.01 },
+  ],
+  quiz: {
+    question: 'You start with <b>10 g</b> instead of 5 g (same k = 1.15 × 10⁻³ s⁻¹). How long until half of it has reacted?',
+    options: ['Twice as long: about 1206 s', 'The same: about 603 s', 'Half as long: about 301 s'], correct: 1,
+    right: '✓ Right. For first order t½ = 0.693/k: the starting amount cancels out. 10 g → 5 g takes the same 603 s as 5 g → 2.5 g. <b>Test it:</b> set [A]₀ to 10 g and watch the half-life stat stay put.',
+    wrong: '✗ Not quite. More A does mean more molecules react each second, but you also have more to get through, and the two effects cancel exactly: t½ = 0.693/k has no [A]₀ in it.',
+  },
+});
+})();
+</script>
+</body>
+</html>

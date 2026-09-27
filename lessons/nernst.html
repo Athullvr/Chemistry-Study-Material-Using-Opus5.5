@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Nernst Cell · Sketch to Chemistry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/studio.css">
+</head>
+<body>
+<script src="../shared/catalog.js"></script>
+<script src="../shared/studio.js"></script>
+<script>
+(() => {
+const { clamp, clamp01, S, Lr, lerp, easeOut, hash, sci, sgn } = Studio.U;
+const { INK, GRAY, ORANGE, ZN: ZNC, CU: CUC, SANS, MONO, HAND } = Studio.C;
+const { sk, hatch, hand, arrowSk, softEllipse, bead, ringFx, tag, mkPath, bezPts, ellipsePts, sketchAxes } = Studio.draw;
+let ctx, TT, P;                        // set at the start of every draw()
+
+// ------------------------------------------------------------ chemistry
+const R = 8.314, F = 96485, n = 2, E0 = 1.10, EZN = -0.76, ECU = 0.34;
+const fac = T => 2.303 * R * T / (n * F);
+const emf = s => E0 - fac(s.T) * Math.log10(s.zn / s.cu);
+const eZn = s => EZN + fac(s.T) * Math.log10(s.zn);
+const eCu = s => ECU + fac(s.T) * Math.log10(s.cu);
+const PROBLEM = { zn: 0.001, cu: 0.1, T: 298 };
+const norm = c => clamp01((Math.log10(c) + 6) / 6.3);
+const ionTarget = c => clamp(Math.round(4 * (Math.log10(c) + 6)), 0, 26);
+// discharge: current ∝ E, Cu²⁺ consumed 1:1 with Zn²⁺ produced (equal volumes)
+function dischargeStep(s, dt) {
+  const E = emf(s);
+  if (E <= 0.002) return true;
+  s.cu *= Math.exp(-0.012 * E / (s.cu + 4e-4) * dt);
+  s.zn = s.total - s.cu;
+  return false;
+}
+const DRAIN = (() => {
+  const s = { zn: 0.001, cu: 0.1, T: 298, total: 0.101 }, out = [];
+  for (let i = 0; i <= 400; i++) { out.push([s.zn, s.cu]); for (let j = 0; j < 6; j++) dischargeStep(s, 0.02 / 6 * 3.6); }
+  return out;
+})();
+const drainAt = t => DRAIN[clamp(Math.floor((t - 40) / 0.02), 0, 400)];
+
+// ------------------------------------------------------------ geometry
+const GEO = {
+  L: { x0: 170, x1: 470, rod: 290, leg: 420 },
+  R: { x0: 640, x1: 940, rod: 820, leg: 690 },
+  top: 470, bot: 840, liq: 562, rodTop: 330, rodBot: 800, legBot: 640,
+  meter: { x: 555, y: 205, w: 180, h: 150 },
+};
+const WIRE_B = [[290, 324], [290, 170], [525, 390], [525, 266]];
+const WIRE_R = [[585, 266], [585, 390], [820, 170], [820, 324]];
+const ePath = mkPath([[290, 700], ...bezPts(WIRE_B), [555, 266], ...bezPts(WIRE_R), [820, 700]]);
+const bridgePts = [[420, 632], [420, 400], [690, 400], [690, 632]];
+const bPath = mkPath(bridgePts);
+const NE = 22, SPACING = ePath.len / NE;
+
+function ionBlocked(side, x, y) {
+  const g = GEO[side];
+  return (Math.abs(x - g.rod) < 17 + 16 && y < GEO.rodBot + 16) || (Math.abs(x - g.leg) < 19 + 15 && y < GEO.legBot + 16);
+}
+function makeIons(side, seed) {
+  const g = GEO[side], arr = [];
+  for (let k = 0; arr.length < 26 && k < 3000; k++) {
+    const x = lerp(g.x0 + 24, g.x1 - 24, hash(seed + k * 2)), y = lerp(GEO.liq + 30, GEO.bot - 24, hash(seed + k * 2 + 1));
+    if (ionBlocked(side, x, y) || arr.some(o => Math.hypot(o.x - x, o.y - y) < 29)) continue;
+    arr.push({ x, y, f1: .4 + hash(seed + k * 3) * .8, f2: .4 + hash(seed + k * 5) * .8, p1: hash(seed + k * 7) * 6.28, p2: hash(seed + k * 11) * 6.28, a: 0 });
+  }
+  return arr;
+}
+const IONS = { zn: makeIons('L', 17), cu: makeIons('R', 131) };
+let ePhase = 0, bPhase = 0, ballPhase = 0, gxMax = 6, labTrail = [];
+const vA = { energy: 1, graph: 0, working: 0 };
+
+// ------------------------------------------------------------ drawing: ions, cell
+function ionDraw(x, y, type, a, m) {
+  if (a <= 0.01) return;
+  const base = ctx.globalAlpha;
+  if (m < 1) {
+    ctx.globalAlpha = base * a * (1 - m * 0.85);
+    const col = type === 'zn' ? INK : '#2f55c8';
+    sk(ellipsePts(x, y, 13, 13, 14), x * 3 + y, 1, { w: 1.3, amp: 0.8, single: true, color: col });
+    ctx.font = `700 14px ${HAND}`; ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(type === 'zn' ? 'Zn²⁺' : 'Cu²⁺', x, y + 1);
+  }
+  if (m > 0) {
+    ctx.globalAlpha = base * a * m;
+    const gr = ctx.createRadialGradient(x - 4, y - 5, 1, x, y, 14);
+    if (type === 'zn') { gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.35, '#c9cfd8'); gr.addColorStop(1, '#6f7886'); }
+    else { gr.addColorStop(0, '#e6edf5'); gr.addColorStop(0.4, '#7c9fca'); gr.addColorStop(1, '#3a6190'); }
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.font = `700 9.5px ${SANS}`; ctx.fillStyle = type === 'zn' ? '#1d232c' : '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(type === 'zn' ? 'Zn²⁺' : 'Cu²⁺', x, y + 0.5);
+  }
+  ctx.globalAlpha = base;
+}
+function bodyPath(g, top, inset = 0) {
+  const x0 = g.x0 + inset, x1 = g.x1 - inset, b = GEO.bot - inset;
+  ctx.beginPath(); ctx.moveTo(x0, top); ctx.lineTo(x0, b - 26); ctx.quadraticCurveTo(x0, b, x0 + 26, b);
+  ctx.lineTo(x1 - 26, b); ctx.quadraticCurveTo(x1, b, x1, b - 26); ctx.lineTo(x1, top);
+}
+function drawSketchCell(st, E) {
+  const { L, R } = GEO;
+  for (const [g, seed, p] of [[L, 11, P(0.4, 1.4)], [R, 57, P(1.0, 2.0)]]) {
+    const { x0, x1 } = g, b = GEO.bot, t = GEO.top;
+    sk([[x0 - 10, t - 8], [x0, t], [x0, b - 26], [x0 + 8, b - 8], [x0 + 26, b], [x1 - 26, b], [x1 - 8, b - 8], [x1, b - 26], [x1, t], [x1 + 10, t - 8]], seed, p, { w: 2 });
+    sk(ellipsePts((x0 + x1) / 2, t, (x1 - x0) / 2, 14, 30, Math.PI, Math.PI * 2 + 0.1), seed + 3, p, { w: 1.3 });
+  }
+  const lp = P(1.8, 2.6);
+  for (const [g, seed] of [[L, 91], [R, 93]]) {
+    const pts = []; for (let x = g.x0 + 4; x <= g.x1 - 4; x += 20) pts.push([x, GEO.liq + Math.sin(x * 0.05) * 2]);
+    sk(pts, seed, lp, { w: 1.4 });
+  }
+  hatch(() => bodyPath(L, GEO.liq, 3), L.x0, GEO.liq, L.x1, GEO.bot, lerp(40, 20, norm(st.zn)), 5, lp, 0.18);
+  hatch(() => bodyPath(R, GEO.liq, 3), R.x0, GEO.liq, R.x1, GEO.bot, lerp(40, 11, norm(st.cu)), 9, lp, 0.3);
+  for (const [g, seed, p] of [[L, 201, P(2.2, 2.8)], [R, 203, P(2.6, 3.2)]]) {
+    const x = g.rod;
+    sk([[x - 17, GEO.rodTop], [x - 17, GEO.rodBot], [x + 17, GEO.rodBot], [x + 17, GEO.rodTop], [x - 17, GEO.rodTop]], seed, p, { w: 1.9 });
+    hatch(() => { ctx.beginPath(); ctx.rect(x - 17, GEO.rodTop, 34, GEO.rodBot - GEO.rodTop); }, x - 17, GEO.rodTop, x + 17, GEO.rodBot, 7, seed, p, 0.3);
+  }
+  const bp = P(3.0, 3.9);
+  for (const off of [-18, 18]) sk([[420 + off, GEO.legBot], [420 + off, 400 + off], [690 - off, 400 + off], [690 - off, GEO.legBot]], 301 + off, bp, { w: 1.7 });
+  const wp = P(3.6, 4.4);
+  sk(bezPts(WIRE_B), 401, wp, { w: 2.2 }); sk(bezPts(WIRE_R), 403, wp, { w: 2.2 });
+  const mp = P(4.2, 4.9), M = GEO.meter;
+  sk([[M.x - 90, M.y - 75], [M.x + 90, M.y - 75], [M.x + 90, M.y + 75], [M.x - 90, M.y + 75], [M.x - 90, M.y - 75]], 501, mp, { w: 2 });
+  sk([[M.x - 70, M.y - 55], [M.x + 70, M.y - 55], [M.x + 70, M.y], [M.x - 70, M.y], [M.x - 70, M.y - 55]], 503, mp, { w: 1.4 });
+  sk(ellipsePts(M.x, M.y + 32, 15, 15, 14), 505, mp, { w: 1.4 });
+  if (mp >= 1) hand(TT !== null && TT < 9 ? '? . ? ? V' : E.toFixed(3) + ' V', M.x, M.y - 16, { size: 34, align: 'center' });
+}
+function drawModelCell(st) {
+  const { L, R } = GEO, M = GEO.meter;
+  for (const g of [L, R]) softEllipse((g.x0 + g.x1) / 2 + 30, GEO.bot + 8, (g.x1 - g.x0) / 2 + 40, 22, 0.28);
+  softEllipse(M.x + 20, M.y + 86, 110, 16, 0.22);
+  for (const g of [L, R]) {
+    const cx = (g.x0 + g.x1) / 2, w = g.x1 - g.x0;
+    bodyPath(g, GEO.top); ctx.closePath(); ctx.fillStyle = 'rgba(225,238,244,0.22)'; ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx, GEO.top, w / 2, 15, 0, Math.PI, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(110,130,140,0.45)'; ctx.lineWidth = 2.5; ctx.stroke();
+  }
+  for (const [g, type] of [[L, 'zn'], [R, 'cu']]) {
+    const x = g.rod - 17, gr = ctx.createLinearGradient(x, 0, x + 34, 0);
+    const c = type === 'zn' ? ['#6c7581', '#e3e8ee', '#8c96a3', '#5f6873'] : ['#7a3c19', '#f5b286', '#c46f3c', '#6f3415'];
+    gr.addColorStop(0, c[0]); gr.addColorStop(0.35, c[1]); gr.addColorStop(0.7, c[2]); gr.addColorStop(1, c[3]);
+    ctx.fillStyle = gr; ctx.fillRect(x, GEO.rodTop, 34, GEO.rodBot - GEO.rodTop);
+    ctx.beginPath(); ctx.ellipse(g.rod, GEO.rodBot, 17, 5, 0, 0, Math.PI); ctx.fill();
+    ctx.fillStyle = type === 'zn' ? '#d4dae1' : '#e59b6b';
+    ctx.beginPath(); ctx.ellipse(g.rod, GEO.rodTop, 17, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2b2b2b'; ctx.fillRect(g.rod - 11, GEO.rodTop - 4, 22, 16);
+    ctx.fillStyle = 'rgba(20,20,20,0.55)'; ctx.font = `800 15px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(type === 'zn' ? 'Zn' : 'Cu', g.rod, 510);
+  }
+  ctx.lineJoin = 'round'; ctx.lineCap = 'butt';
+  const bridgeStroke = (w, col) => { ctx.beginPath(); bridgePts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.lineWidth = w; ctx.strokeStyle = col; ctx.stroke(); };
+  bridgeStroke(40, 'rgba(120,140,150,0.55)'); bridgeStroke(35, 'rgba(236,242,244,0.95)'); bridgeStroke(28, 'rgba(246,240,222,0.95)');
+  bridgeStroke(4, 'rgba(255,255,255,0.7)');
+  ctx.fillStyle = '#fbfbf8';
+  for (const x of [420, 690]) { ctx.beginPath(); ctx.ellipse(x, GEO.legBot - 4, 14, 8, 0, 0, Math.PI * 2); ctx.fill(); }
+  const bp = bPhase / bPath.len;
+  for (let i = 0; i < 8; i++) for (const kind of ['K', 'N']) {
+    const [x, y] = bPath.at(i / 8 + (kind === 'K' ? 0.02 + bp : 0.07 - bp));
+    const gr = ctx.createRadialGradient(x - 2, y - 2, 0.5, x, y, 7);
+    gr.addColorStop(0, '#fff'); gr.addColorStop(0.4, kind === 'K' ? '#c490b8' : '#93bf9f'); gr.addColorStop(1, kind === 'K' ? '#87567d' : '#527f60');
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const [g, col] of [[L, `rgba(190,198,206,${0.16 + 0.14 * norm(st.zn)})`], [R, `rgba(58,108,168,${0.12 + 0.36 * norm(st.cu)})`]]) {
+    const cx = (g.x0 + g.x1) / 2, w = g.x1 - g.x0;
+    const scaleA = k => col.replace(/[\d.]+\)$/, m => (parseFloat(m) * k).toFixed(3) + ')');
+    bodyPath(g, GEO.liq, 4); ctx.closePath();
+    const gr = ctx.createLinearGradient(g.x0, 0, g.x1, 0);
+    gr.addColorStop(0, scaleA(1.4)); gr.addColorStop(0.5, col); gr.addColorStop(1, scaleA(1.5));
+    ctx.fillStyle = gr; ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx, GEO.liq, w / 2 - 4, 12, 0, 0, Math.PI * 2);
+    ctx.fillStyle = scaleA(0.7); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.2; ctx.stroke();
+  }
+}
+function drawGlassFront() {
+  for (const g of [GEO.L, GEO.R]) {
+    const cx = (g.x0 + g.x1) / 2, w = g.x1 - g.x0;
+    bodyPath(g, GEO.top); ctx.strokeStyle = 'rgba(95,115,125,0.6)'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(cx, GEO.top, w / 2, 15, 0, 0, Math.PI); ctx.lineWidth = 2.5; ctx.stroke();
+    const hl = ctx.createLinearGradient(g.x0 + 12, 0, g.x0 + 34, 0);
+    hl.addColorStop(0, 'rgba(255,255,255,0)'); hl.addColorStop(0.5, 'rgba(255,255,255,0.55)'); hl.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = hl; ctx.fillRect(g.x0 + 12, GEO.top + 20, 22, GEO.bot - GEO.top - 60);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(g.x1 - 12, GEO.top + 30, 4, GEO.bot - GEO.top - 80);
+    ctx.strokeStyle = 'rgba(95,115,125,0.45)'; ctx.lineWidth = 1.5;
+    for (let i = 0; i < 5; i++) { const y = GEO.bot - 60 - i * 55; ctx.beginPath(); ctx.moveTo(g.x1 - 44, y); ctx.lineTo(g.x1 - 22, y); ctx.stroke(); }
+  }
+}
+function drawWiresMeter(E, showReading) {
+  const M = GEO.meter;
+  for (const [p, col, hi] of [[WIRE_B, '#232323', '#666'], [WIRE_R, '#9e3d34', '#c47a70']]) {
+    ctx.beginPath(); ctx.moveTo(...p[0]); ctx.bezierCurveTo(...p[1], ...p[2], ...p[3]);
+    ctx.strokeStyle = col; ctx.lineWidth = 7; ctx.lineCap = 'round'; ctx.stroke();
+    ctx.strokeStyle = hi; ctx.lineWidth = 1.6; ctx.stroke();
+  }
+  const x = M.x - M.w / 2, y = M.y - M.h / 2;
+  ctx.fillStyle = '#b8ad99'; ctx.beginPath(); ctx.roundRect(x - 4, y - 4, M.w + 8, M.h + 8, 22); ctx.fill();
+  const body = ctx.createLinearGradient(0, y, 0, y + M.h); body.addColorStop(0, '#f1ece2'); body.addColorStop(1, '#dcd3c3');
+  ctx.fillStyle = body; ctx.beginPath(); ctx.roundRect(x, y, M.w, M.h, 18); ctx.fill();
+  ctx.fillStyle = '#3b3631'; ctx.beginPath(); ctx.roundRect(x + 12, y + 10, M.w - 24, M.h - 20, 10); ctx.fill();
+  const lcd = ctx.createLinearGradient(0, y + 20, 0, y + 72); lcd.addColorStop(0, '#c4cfae'); lcd.addColorStop(1, '#a9b692');
+  ctx.fillStyle = lcd; ctx.beginPath(); ctx.roundRect(x + 22, y + 20, M.w - 44, 52, 6); ctx.fill();
+  ctx.fillStyle = '#1e2518'; ctx.font = `700 34px ${MONO}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(showReading ? Math.max(0, E).toFixed(3) : '-.---', M.x - 6, y + 47);
+  ctx.font = `700 13px ${MONO}`; ctx.fillText('V', M.x + 62, y + 52);
+  ctx.fillStyle = '#4a4a4a'; ctx.beginPath(); ctx.arc(M.x, y + 102, 15, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#d8d8d8'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(M.x, y + 102); ctx.lineTo(M.x + 9, y + 92); ctx.stroke();
+  for (const [jx, col, lab] of [[525, '#111', 'COM'], [585, '#9e3d34', 'V']]) {
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(jx, 266, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#bdbdbd'; ctx.font = `600 8px ${MONO}`; ctx.fillText(lab, jx + (jx < 555 ? -20 : 16), 266);
+  }
+}
+function drawElectrons(alpha) {
+  if (alpha <= 0) return;
+  const u0 = ePhase / ePath.len, M = GEO.meter, base = ctx.globalAlpha;
+  for (let i = 0; i < NE; i++) {
+    const [x, y] = ePath.at(i / NE + u0);
+    if (Math.abs(x - M.x) < M.w / 2 && Math.abs(y - M.y) < M.h / 2) continue;
+    ctx.globalAlpha = base * alpha * (y > GEO.liq - 8 && (Math.abs(x - 290) < 20 || Math.abs(x - 820) < 20) ? 0.5 : 1);
+    bead(x, y, 7, '−');
+  }
+  ctx.globalAlpha = base;
+}
+function drawIons(st, m, clk) {
+  for (const type of ['zn', 'cu']) for (const p of IONS[type]) {
+    if (p.a > 0.01) ionDraw(p.x + 10 * Math.sin(p.f1 * clk + p.p1), p.y + 8 * Math.sin(p.f2 * clk * 1.1 + p.p2), type, p.a, m);
+  }
+  if (ePhase <= 0) return;
+  // electrode reactions locked to electron flow: every 2 e⁻ → one Zn → Zn²⁺ and one Cu²⁺ → Cu
+  const Pk = 2 * SPACING, k0 = Math.floor(ePhase / Pk);
+  for (let k = Math.max(0, k0 - 4); k <= k0; k++) {
+    const po = (ePhase - k * Pk) / (3.2 * Pk);
+    if (po > 0 && po < 1) {
+      const dir = hash(k + 1) < 0.5 ? -1 : 1, y0 = lerp(600, 780, hash(k + 7));
+      ringFx(290 + dir * 17, y0, po * 4, '#8d99a8');
+      ionDraw(290 + dir * (31 + 70 * easeOut(po)), y0 + (hash(k + 3) - 0.5) * 50 * po, 'zn', Math.min(1, po * 8) * (1 - S(po, 0.7, 1)), m);
+    }
+    const pr = (ePhase - k * Pk) / (1.6 * Pk);
+    if (pr > 0 && pr < 1 && st.cu > 1e-5) {
+      const dir = hash(k + 13) < 0.5 ? -1 : 1, ys = lerp(600, 790, hash(k + 5)), xs = 820 + dir * (45 + 50 * hash(k + 11));
+      ionDraw(lerp(xs, 820 + dir * 30, S(pr, 0, 0.85)), ys, 'cu', Math.min(1, pr * 6) * (1 - S(pr, 0.85, 0.95)), m);
+      if (pr > 0.85) ringFx(820 + dir * 17, ys, (pr - 0.85) / 0.15, '#e08a52');
+    }
+  }
+}
+
+// ------------------------------------------------------------ notebook views
+const eY = E => 280 + (E + 1.0) * 400;
+function drawEnergy(a, st, E, flowing) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('electron energy ladder', 1070, 205, { size: 40, prog: P(18.4, 19.2) });
+  const ax = P(18.8, 19.5);
+  sk([[1080, 250], [1080, 850]], 901, ax, { w: 1.6 });
+  if (ax >= 1) {
+    for (const v of [-1.0, -0.5, 0.0]) { sk([[1072, eY(v)], [1088, eY(v)]], 910 + v * 10, 1, { w: 1.3 }); hand((v < 0 ? '−' : '') + Math.abs(v).toFixed(1), 1066, eY(v) + 7, { size: 22, color: GRAY, align: 'right' }); }
+    hand('↑ higher energy for e⁻', 1092, 262, { size: 21, color: GRAY });
+  }
+  const ez = eZn(st), ec = eCu(st), yz = eY(ez), yc = eY(ec), shp = P(19.4, 20.2);
+  if (Math.abs(ez - EZN) > 0.004) { sk([[1115, eY(EZN)], [1235, eY(EZN)]], 921, 1, { w: 1.2, color: GRAY, dash: [6, 7], single: true }); hand('at 1 M', 1240, eY(EZN) + 6, { size: 19, color: GRAY }); }
+  if (Math.abs(ec - ECU) > 0.004) { sk([[1305, eY(ECU)], [1425, eY(ECU)]], 923, 1, { w: 1.2, color: GRAY, dash: [6, 7], single: true }); hand('at 1 M', 1430, eY(ECU) + 6, { size: 19, color: GRAY }); }
+  sk([[1115, yz], [1235, yz]], 931, shp, { w: 5, color: ZNC });
+  sk([[1305, yc], [1425, yc]], 933, shp, { w: 5, color: CUC });
+  sk([[1235, yz], [1305, yc]], 935, P(20.0, 20.5), { w: 1.6, color: GRAY });
+  const lp = P(20.4, 21.2);
+  hand('Zn²⁺/Zn', 1175, yz - 34, { size: 28, align: 'center', prog: lp });
+  hand(sgn(ez, 3) + ' V', 1175, yz - 12, { size: 23, color: GRAY, align: 'center', prog: lp });
+  hand('Cu²⁺/Cu', 1365, yc + 34, { size: 28, align: 'center', prog: lp });
+  hand('+' + ec.toFixed(3) + ' V', 1365, yc + 58, { size: 23, color: GRAY, align: 'center', prog: lp });
+  const bk = P(21.4, 22.3);
+  if (bk > 0) {
+    const bx = 1462, y1 = lerp(yz, yc, bk);
+    sk([[bx, yz], [bx, y1]], 941, 1, { w: 2, color: ORANGE });
+    sk([[bx - 8, yz], [bx + 8, yz]], 943, 1, { w: 2, color: ORANGE, single: true });
+    if (bk >= 1) {
+      sk([[bx - 8, yc], [bx + 8, yc]], 945, 1, { w: 2, color: ORANGE, single: true });
+      hand(E.toFixed(3) + ' V', bx + 12, (yz + yc) / 2 + 4, { size: 34, color: ORANGE });
+      hand('= the push', bx + 12, (yz + yc) / 2 + 32, { size: 22, color: ORANGE });
+    }
+  }
+  if (P(22, 22.5) > 0) {
+    const pos = u => {
+      if (u < 0.35) return [lerp(1122, 1235, u / 0.35), yz - 11];
+      if (u < 0.55) { const k = (u - 0.35) / 0.2; return [lerp(1235, 1305, k * k), lerp(yz, yc, k * k) - 11]; }
+      return [lerp(1305, 1418, (u - 0.55) / 0.45), yc - 11];
+    };
+    const balls = flowing > 0.05 ? [0, 0.33, 0.66] : [null];
+    for (const off of balls) {
+      const u = off === null ? 0.33 : (ballPhase + off) % 1;
+      const [x, y] = pos(u), fa = off === null ? 1 : S(u, 0, 0.06) * (1 - S(u, 0.9, 1));
+      const bb = ctx.globalAlpha; ctx.globalAlpha = bb * fa; bead(x, y, 11, 'e'); ctx.globalAlpha = bb;
+    }
+    if (flowing <= 0.05 && TT === null) hand('circuit open: the electrons wait on the zinc shelf', 1080, 912, { size: 24, color: ORANGE });
+  }
+  ctx.globalAlpha = b;
+}
+function drawGraph(a, st, E, trail) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const f = fac(st.T), lq = Math.log10(st.zn / st.cu), xmin = -6, xmax = gxMax;
+  const Ea = E0 - f * xmin, Eb = E0 - f * xmax, ymin = Math.min(Eb, 0.85) - 0.06, ymax = Ea + 0.05;
+  hand('E(cell) vs log Q', 1080, 205, { size: 40 });
+  const step = xmax - xmin > 20 ? 10 : 2, ys = ymax - ymin > 0.6 ? 0.2 : 0.1, xt = [], yt = [];
+  for (let v = Math.ceil(xmin / step) * step; v <= xmax; v += step) xt.push(v);
+  for (let v = Math.ceil(ymin / ys) * ys; v <= ymax; v += ys) yt.push(+v.toFixed(2));
+  const { X, Y } = sketchAxes({ x0: 1100, y0: 260, x1: 1500, y1: 760 }, { xmin, xmax, ymin, ymax },
+    { xlabel: 'log Q', ylabel: 'E (V)', xticks: xt, yticks: yt, xfmt: v => v < 0 ? '−' + Math.abs(v) : String(v), yfmt: v => v.toFixed(1), seed: 951 });
+  if (ymin < 0) { sk([[1100, Y(0)], [1500, Y(0)]], 991, 1, { w: 1, color: GRAY, dash: [5, 7], single: true }); hand('E = 0  (equilibrium)', 1110, Y(0) - 8, { size: 20, color: GRAY }); }
+  sk([[X(0), 260], [X(0), 760]], 993, 1, { w: 1, color: GRAY, dash: [2, 7], single: true });
+  hand('Q = 1', X(0) + 6, 272, { size: 20, color: GRAY });
+  sk([[X(xmin), Y(Ea)], [X(xmax), Y(Eb)]], 995, 1, { w: 2.2 });
+  if (trail.length > 1) {
+    ctx.beginPath(); trail.forEach(([q, e], i) => { const px = X(clamp(q, xmin, xmax)), py = Y(e); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    ctx.setLineDash([7, 8]); ctx.strokeStyle = ORANGE; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+  }
+  const cx = X(clamp(lq, xmin, xmax)), cy = Y(E);
+  ctx.fillStyle = ORANGE; ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#f3f0e8'; ctx.lineWidth = 3; ctx.stroke();
+  const right = cx < 1390;
+  hand(E.toFixed(3) + ' V', cx + (right ? 16 : -16), cy - 14, { size: 30, color: ORANGE, align: right ? 'left' : 'right' });
+  ctx.globalAlpha = b;
+}
+function drawWorking(a, st, E) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const f = fac(st.T), Q = st.zn / st.cu, lq = Math.log10(Q), term = f * lq, X = 1070, sz = 33;
+  hand('E° = 0.34 − (−0.76) = 1.10 V', X, 220, { size: sz, prog: P(34.0, 34.8) });
+  hand('Q = [Zn²⁺] / [Cu²⁺]', X, 285, { size: sz, prog: P(34.8, 35.4) });
+  hand(`    = ${sci(st.zn)} / ${sci(st.cu)} = ${sci(Q)}`, X, 330, { size: sz, prog: P(35.4, 36.2) });
+  hand(`log Q = ${sgn(lq, 2)}`, X, 380, { size: sz, prog: P(36.2, 36.8) });
+  hand(st.T === 298 ? 'E = E° − (0.0591 / 2) log Q' : 'E = E° − (2.303RT / 2F) log Q', X, 445, { size: sz, prog: P(36.9, 37.6) });
+  hand(`    = 1.10 − ${f.toFixed(4)} × (${sgn(lq, 2)})`, X, 490, { size: sz, prog: P(37.6, 38.3) });
+  hand(`    = 1.10 ${term > 0 ? '−' : '+'} ${Math.abs(term).toFixed(4)}`, X, 535, { size: sz, prog: P(38.3, 38.8) });
+  const fin = P(38.9, 39.4);
+  if (fin > 0) {
+    const w = hand(`E = ${E.toFixed(3)} V`, X + 20, 615, { size: 50, color: ORANGE, prog: fin, weight: 700 });
+    const cp = P(39.2, 39.7);
+    if (cp > 0) sk(ellipsePts(X + 20 + w / 2, 600, w / 2 + 26, 38, 30, -2.2, -2.2 + Math.PI * 2.15), 971, cp, { w: 2.2, color: ORANGE });
+  }
+  hand(lq < -0.005 ? 'Q < 1  →  E is bigger than E°' : lq > 0.005 ? 'Q > 1  →  E is smaller than E°' : 'Q = 1  →  E = E°', X, 700, { size: 26, color: GRAY, prog: P(39.5, 40) });
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ tour notes
+function note(t, t0, t1, tOut, fn) {
+  if (t < t0 || t > tOut + 0.6) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * (1 - S(t, tOut, tOut + 0.6));
+  fn(Lr(t, t0, t1)); ctx.globalAlpha = b;
+}
+function drawTourNotes(t) {
+  note(t, 4.9, 5.4, 10.5, p => { hand('zinc', 100, 405, { size: 34, color: ORANGE, align: 'center', prog: p }); arrowSk(125, 412, 266, 440, 1001, p); });
+  note(t, 5.1, 5.6, 10.5, p => { hand('copper', 1010, 405, { size: 34, color: ORANGE, align: 'center', prog: p }); arrowSk(975, 412, 846, 440, 1003, p); });
+  note(t, 5.3, 5.8, 10.5, p => hand('salt bridge', 555, 368, { size: 30, color: ORANGE, align: 'center', prog: p }));
+  note(t, 5.5, 6.0, 10.5, p => { hand('voltmeter', 790, 150, { size: 30, color: ORANGE, align: 'center', prog: p }); arrowSk(745, 160, 660, 185, 1005, p); });
+  note(t, 12.2, 13.2, 17.6, p => { hand('Zn → Zn²⁺ + 2e⁻', 320, 925, { size: 36, color: ORANGE, align: 'center', prog: p }); hand('oxidation · zinc dissolves', 320, 958, { size: 24, color: GRAY, align: 'center', prog: p }); });
+  note(t, 15.4, 16.4, 17.6, p => { hand('Cu²⁺ + 2e⁻ → Cu', 800, 925, { size: 36, color: ORANGE, align: 'center', prog: p }); hand('reduction · copper plates on', 800, 958, { size: 24, color: GRAY, align: 'center', prog: p }); });
+  note(t, 13.2, 13.8, 17.6, p => hand('electrons →', 385, 208, { size: 30, color: ORANGE, prog: p, rot: -0.42 }));
+  note(t, 22.6, 23.4, 24.8, p => hand('e⁻ roll downhill', 1275, eY(-0.2), { size: 26, color: ORANGE, align: 'center', prog: p, rot: 1.1 }));
+  note(t, 25.8, 26.8, 32.6, p => hand('fewer Zn²⁺  →  zinc shelf rises  →  bigger push', 1070, 905, { size: 26, color: ORANGE, prog: p }));
+  note(t, 29.2, 30.2, 32.6, p => hand('fewer Cu²⁺  →  copper shelf rises  →  smaller push', 1070, 942, { size: 26, color: ORANGE, prog: p }));
+  note(t, 41.4, 42.4, 47.8, p => hand('Cu²⁺ is being used up…', 1100, 845, { size: 28, color: ORANGE, prog: p }));
+  note(t, 45.0, 45.8, 47.8, p => hand('E → 0 : the battery is dead', 1100, 885, { size: 28, color: ORANGE, prog: p }));
+  note(t, 46.0, 46.8, 47.8, p => hand('at that point Q = K ≈ 10³⁷', 1100, 925, { size: 28, color: GRAY, prog: p }));
+  note(t, 48.3, 49.2, 60, p => { hand('your turn', 1380, 940, { size: 54, color: ORANGE, prog: p, weight: 700, align: 'center' }); arrowSk(1470, 925, 1580, 900, 1009, p); });
+}
+
+// ------------------------------------------------------------ lesson config
+Studio.lesson({
+  id: 'nernst',
+  unit: 'Unit 2 · Electrochemistry',
+  title: 'The Nernst Cell',
+  headline: 'Zn | Zn²⁺ ‖ Cu²⁺ | Cu',
+  panelEyebrow: 'Nernst lab',
+  intro: 'A pencil sketch of a zinc–copper cell, brought to life. See why its voltage depends on concentration, then solve it and try it yourself.',
+  welcome: { title: 'Why does a battery\'s voltage change?', text: 'Press Play the tour for a 50-second guided story, or jump straight into the lab.', formula: 'E = E° − (0.0591 / n) · log Q' },
+  problem: {
+    html: 'Calculate the EMF at 298 K of<span class="cell">Zn | Zn²⁺(0.001 M) ‖ Cu²⁺(0.1 M) | Cu</span>E°(Zn²⁺/Zn) = −0.76 V · E°(Cu²⁺/Cu) = +0.34 V',
+    answer: 'E = 1.10 − (0.0591/2)·log(0.01) = 1.159 V', revealAt: 38.9, revealChapter: 'SOLVE',
+  },
+  tourEnd: 51,
+  introT: 6,
+  chapters: [
+    { t: 0, key: 'SKETCH', title: 'A cell on paper', text: 'A Daniell cell: a zinc rod in Zn²⁺ solution and a copper rod in Cu²⁺ solution, joined by a wire (through a voltmeter) and a salt bridge.', formula: 'Zn | Zn²⁺ ‖ Cu²⁺ | Cu' },
+    { t: 6, key: 'BUILD', title: 'Brought to life', text: 'The two metals compete for electrons. The one that gives them up more easily becomes the negative electrode, the anode.', formula: 'anode → oxidation   ·   cathode → reduction' },
+    { t: 11, key: 'FLOW', title: 'Electrons flow', text: 'Zinc atoms lose 2 electrons each and dissolve as Zn²⁺. The electrons run through the wire to copper, where Cu²⁺ ions take them and plate out as copper metal.', formula: 'Zn + Cu²⁺ → Zn²⁺ + Cu      (n = 2)' },
+    { t: 18, key: 'LADDER', title: 'The push is a height difference', text: 'Think of each electrode as a shelf that holds electrons. Zinc\'s shelf (−0.76 V) sits higher than copper\'s (+0.34 V). Electrons roll downhill, and the size of the drop is the EMF.', formula: 'E° = E°cathode − E°anode = 0.34 − (−0.76) = 1.10 V' },
+    { t: 25, key: 'TILT', title: 'Concentration moves the shelves', text: 'With fewer Zn²⁺ ions, zinc is even keener to dissolve, so its shelf rises and the push grows. With fewer Cu²⁺ ions, copper pulls less, so its shelf rises and the push shrinks. The Nernst equation measures these shifts.', formula: 'E = E° − (0.0591 / n) · log Q ,   Q = [Zn²⁺] / [Cu²⁺]' },
+    { t: 33, key: 'SOLVE', title: 'Now the class problem', text: '[Zn²⁺] = 0.001 M and [Cu²⁺] = 0.1 M, so Q = 0.01 and log Q = −2. The correction is −(0.0296)(−2) = +0.059 V, so the EMF ends up above E°.', formula: 'E = 1.10 + 0.059 = 1.159 V' },
+    { t: 40, key: 'DRAIN', title: 'Why batteries go flat', text: 'While current flows, Cu²⁺ is used up and Zn²⁺ builds up. Q grows and E falls. When Q reaches the equilibrium constant K, the push is zero: the battery is dead.', formula: 'E = 0   ⇔   Q = K ≈ 10³⁷' },
+    { t: 48, key: 'YOUR TURN', title: 'Your turn', text: 'Move the sliders, close the circuit, switch notebook views, and try to complete all four challenges.', formula: '' },
+  ],
+  camera: [[0, 800, 500, 1], [6, 800, 500, 1], [8.5, 560, 560, 1.3], [11, 560, 560, 1.3], [12.5, 330, 700, 2.2], [14.5, 330, 700, 2.2],
+    [16.5, 790, 700, 2.0], [18, 790, 700, 2.0], [19.5, 1270, 520, 1.5], [24.5, 1270, 520, 1.5], [26, 800, 515, 1], [32.5, 800, 515, 1],
+    [34, 1270, 470, 1.45], [39.6, 1270, 470, 1.45], [41, 800, 510, 1], [99, 800, 510, 1]],
+  tourState(t) {
+    let zn = 1, cu = 1;
+    if (t >= 25) zn = Math.pow(10, -3 * S(t, 25.5, 28));
+    if (t >= 29) cu = Math.pow(10, -1 * S(t, 29, 31.5));
+    if (t >= 40) [zn, cu] = drainAt(t);
+    return {
+      zn, cu, T: 298, m: S(t, 6.5, 9.5), flow: t >= 11 ? S(t, 11, 12) : 0,
+      views: { energy: S(t, 18, 18.8) * (1 - S(t, 32.6, 33.2)), working: S(t, 33.2, 34) * (1 - S(t, 39.6, 40.2)), graph: S(t, 40.2, 41) },
+    };
+  },
+  initLab: () => ({ ...PROBLEM, total: PROBLEM.zn + PROBLEM.cu, m: 1, view: 'energy', closed: false, slow: false, trailOn: true, dead: false }),
+  onEnterLab() { labTrail = []; },
+  onReset() { labTrail = []; },
+  step(lab, dt) {
+    if (lab.closed && dischargeStep(lab, dt)) { lab.closed = false; lab.dead = true; }
+  },
+  draw(env) {
+    ctx = env.ctx; TT = env.TT; P = env.P;
+    const lab = env.mode === 'lab' ? env.lab : null, st = env.st;
+    const m = lab ? lab.m : st.m, flow = lab ? (lab.closed ? 1 : 0) : st.flow, E = emf(st);
+    if (lab) for (const v in vA) vA[v] = env.snap ? (v === lab.view ? 1 : 0) : lerp(vA[v], v === lab.view ? 1 : 0, 1 - Math.exp(-env.rawDt * 7));
+    const views = lab ? vA : st.views;
+
+    const eSpeed = flow * 150 * Math.max(E, 0);
+    ePhase += eSpeed * env.dt; bPhase += eSpeed * 0.14 * env.dt;
+    if (flow > 0.05) ballPhase += env.dt * (0.15 + 0.5 * Math.max(E, 0));
+    for (const type of ['zn', 'cu']) {
+      const target = ionTarget(type === 'zn' ? st.zn : st.cu);
+      IONS[type].forEach((p, i) => { const want = i < target ? 1 : 0; p.a = env.snap ? want : lerp(p.a, want, 1 - Math.exp(-env.rawDt * 6)); });
+    }
+    const trail = lab ? labTrail : DRAIN.slice(0, clamp(Math.floor((TT - 40) / 0.02) + 1, 0, 401)).map(([zn, cu]) => [Math.log10(zn / cu), emf({ zn, cu, T: 298 })]);
+    if (lab && lab.trailOn) {
+      const lq = Math.log10(st.zn / st.cu), lp = labTrail[labTrail.length - 1];
+      if (!lp || Math.abs(lp[0] - lq) > 0.03 || Math.abs(lp[1] - E) > 0.002) { labTrail.push([lq, E]); if (labTrail.length > 600) labTrail.shift(); }
+    }
+    const maxQ = Math.max(Math.log10(st.zn / st.cu), ...trail.map(p => p[0]), 0);
+    const want = clamp(Math.ceil(maxQ + 2), 6, 40);
+    gxMax = env.snap ? want : lerp(gxMax, want, 1 - Math.exp(-env.rawDt * 3));
+
+    hand('Daniell cell', 60, 100, { size: 50, prog: P(3.8, 4.8), weight: 700 });
+    hand('Zn | Zn²⁺ ‖ Cu²⁺ | Cu', 62, 140, { size: 28, color: GRAY, prog: P(4.4, 5.2) });
+    ctx.globalAlpha = 1 - 0.82 * m; drawSketchCell(st, E); ctx.globalAlpha = 1;
+    const tipAfterSketch = Studio.pencilTip;
+    if (m > 0) { ctx.globalAlpha = m; drawModelCell(st); ctx.globalAlpha = 1; }
+    ctx.globalAlpha = P(4.6, 5.4); drawIons(st, m, env.clock); ctx.globalAlpha = 1;
+    if (m > 0) { ctx.globalAlpha = m; drawGlassFront(); drawWiresMeter(E, TT === null || TT > 9); ctx.globalAlpha = 1; }
+    drawElectrons(TT === null ? 1 : S(TT, 10.8, 11.4));
+    const tagA = TT === null ? 1 : S(TT, 8.5, 9.5);
+    tag(320, 872, `[Zn²⁺] ${sci(st.zn)} M`, { color: '#4b5360', alpha: tagA, leader: [320, GEO.bot + 4] });
+    tag(790, 872, `[Cu²⁺] ${sci(st.cu)} M`, { color: '#2f55c8', alpha: tagA, leader: [790, GEO.bot + 4] });
+    drawEnergy(views.energy, st, E, flow);
+    drawGraph(views.graph, st, E, trail);
+    drawWorking(views.working, st, E);
+    if (env.mode === 'tour') drawTourNotes(TT);
+    if (lab) {
+      if (lab.dead) hand('flat battery: Q has reached K', 555, 108, { size: 28, color: ORANGE, align: 'center' });
+      else hand(lab.closed ? 'circuit closed: current flows →' : 'circuit open: the voltmeter reads the push, no current flows', 555, 108, { size: 25, color: ORANGE, align: 'center' });
+    }
+    Studio.pencilTip = tipAfterSketch || Studio.pencilTip;
+  },
+  stats: [{ id: 'E', label: 'EMF' }, { id: 'Q', label: 'Q' }, { id: 'L', label: 'LOG Q' }, { id: 'G', label: 'ΔG' }],
+  statValues(st) {
+    const E = emf(st), Q = st.zn / st.cu;
+    return { E: `${Math.max(0, E).toFixed(3)}<small>V</small>`, Q: sci(Q), L: sgn(Math.log10(Q), 2), G: `${sgn(-n * F * Math.max(E, 0) / 1000, 0)}<small>kJ</small>` };
+  },
+  now(st, lab) {
+    const E = emf(st), lq = Math.log10(st.zn / st.cu), f = fac(st.T);
+    let title, text;
+    if (lab.dead) { title = 'Equilibrium reached'; text = 'Q now equals K, so E = 0. No net reaction and no push: this is a flat battery.'; }
+    else if (lab.closed) { title = 'Current is flowing'; text = 'Zn dissolves and Cu plates out. [Cu²⁺] falls and [Zn²⁺] rises, so Q grows and E slides down the line. It stays near 1.1 V until Cu²⁺ is almost gone, because E depends on log Q.'; }
+    else if (Math.abs(lq) < 0.01) { title = 'Q = 1: standard behaviour'; text = 'The log term is zero, so E = E° = 1.10 V. Both shelves are back at their 1 M positions.'; }
+    else if (lq < 0) { title = 'Q < 1: extra push'; text = `There is less product (Zn²⁺) than reactant (Cu²⁺), so the reaction is driven harder and E is above E°. Every 10× decrease in Q adds ${f.toFixed(4)} V.`; }
+    else { title = 'Q > 1: weaker push'; text = `Product (Zn²⁺) has built up relative to reactant (Cu²⁺), so E is below E°. Every 10× increase in Q removes ${f.toFixed(4)} V.`; }
+    if (st.T !== 298 && !lab.dead) text += ` At ${st.T} K the slope 2.303RT/nF is ${f.toFixed(4)} V (it is 0.0296 V at 298 K).`;
+    return { title, text, formula: `E = 1.10 − ${f.toFixed(4)} × log(${sci(st.zn)} / ${sci(st.cu)}) = ${Math.max(0, E).toFixed(3)} V` };
+  },
+  controls: [
+    { type: 'slider', label: '[Cu²⁺] · cathode side', min: -6, max: 0.3, ends: ['DILUTE', 'CONCENTRATED'],
+      get: l => clamp(Math.log10(l.cu), -6, 0.3), set: (l, v) => { l.cu = Math.pow(10, v); l.total = l.zn + l.cu; l.dead = false; }, show: l => sci(l.cu) + ' M' },
+    { type: 'slider', label: '[Zn²⁺] · anode side', min: -6, max: 0.3, ends: ['DILUTE', 'CONCENTRATED'],
+      get: l => clamp(Math.log10(l.zn), -6, 0.3), set: (l, v) => { l.zn = Math.pow(10, v); l.total = l.zn + l.cu; l.dead = false; }, show: l => sci(l.zn) + ' M' },
+    { type: 'slider', label: 'Temperature', min: 273, max: 373, step: 1, ends: ['COLD', 'HOT'], get: l => l.T, set: (l, v) => { l.T = v; }, show: l => l.T + ' K' },
+    { type: 'button', label: l => l.dead ? 'Battery is flat, press Reset' : l.closed ? 'Open the circuit' : 'Close the circuit',
+      disabled: l => l.dead, onClick: l => { l.closed = !l.closed; l.total = l.zn + l.cu; if (l.closed && l.view === 'working') l.view = 'graph'; },
+      chips: [{ key: 'slow', label: 'Slow motion' }, { key: 'trailOn', label: 'Trace path', onToggle: l => { if (!l.trailOn) labTrail = []; } }] },
+    { type: 'slider', label: 'Sketch — Model', min: 0, max: 1, ends: ['SKETCH', 'MODEL'], get: l => l.m, set: (l, v) => { l.m = v; } },
+    { type: 'segment', key: 'view', label: 'Notebook view', options: [['energy', 'Energy'], ['graph', 'Graph'], ['working', 'Working']] },
+  ],
+  challenges: [
+    { id: 'std', text: 'Make the voltmeter read exactly E° (1.100 V)', hint: 'Hint: what value of Q makes log Q = 0?', test: (l, st) => Math.abs(emf(st) - 1.10) < 0.0015 },
+    { id: 'high', text: 'Push the EMF above 1.200 V', hint: 'Which ion should be scarce, and which plentiful?', test: (l, st) => emf(st) > 1.2 },
+    { id: 'low', text: 'Drop the EMF below 1.000 V using only the sliders', hint: 'Make Q large.', test: (l, st) => emf(st) < 1.0 && !l.closed && !l.dead },
+    { id: 'dead', text: 'Close the circuit and run the battery flat', hint: 'Watch the Graph view while it drains.', test: l => l.dead },
+  ],
+  quiz: {
+    question: 'You dilute the Cu²⁺ solution <b>10×</b> (Zn²⁺ unchanged). What happens to the EMF?',
+    options: ['It rises by about 0.030 V', 'It falls by about 0.030 V', 'It falls by about 0.059 V'], correct: 1,
+    right: '✓ Right. Q = [Zn²⁺]/[Cu²⁺] grows 10×, so log Q goes up by 1 and E drops by 0.0591/2 ≈ 0.030 V. <b>Test it:</b> drag [Cu²⁺] one decade left.',
+    wrong: '✗ Not quite. Q = [Zn²⁺]/[Cu²⁺], so less Cu²⁺ makes Q bigger. Each 10× in Q changes E by 0.0591/<b>n</b>, and n = 2 here.',
+  },
+});
+})();
+</script>
+</body>
+</html>

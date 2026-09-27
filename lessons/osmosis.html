@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Osmotic Pressure · Sketch to Chemistry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/studio.css">
+</head>
+<body>
+<script src="../shared/catalog.js"></script>
+<script src="../shared/studio.js"></script>
+<script>
+(() => {
+const { clamp, clamp01, S, Lr, lerp, easeOut, hash } = Studio.U;
+const { INK, GRAY, ORANGE, SANS } = Studio.C;
+const { sk, hatch, hand, arrowSk, softEllipse, sphere, ringFx, tag, ellipsePts, sketchAxes } = Studio.draw;
+let ctx, TT, P;                        // set at the start of every draw()
+
+// ------------------------------------------------------------ chemistry
+// π = CRT with C = n/V = (w/M)/V.  R in L bar mol⁻¹ K⁻¹ (NCERT value).
+const R_ = 0.083;
+const CM_PER_BAR = 1e5 / (1000 * 9.81) * 100;     // height of a water column per bar ≈ 1019 cm
+const PROB = { w: 1.26, V: 200, T: 300, M: 61039 };  // M chosen so that π = 2.57×10⁻³ bar exactly
+function derive(s) { const n = s.w / s.M, C = n / (s.V / 1000), pi = C * R_ * s.T; return { n, C, pi, h0: pi * CM_PER_BAR }; }
+const PI0 = derive(PROB).pi, H0 = derive(PROB).h0;   // 2.57e-3 bar, 2.62 cm
+const SUPD = { '-': '⁻', '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+function sciF(c, d = 2) {   // always scientific: 2.57×10⁻³
+  let e = Math.floor(Math.log10(Math.abs(c))), m = c / Math.pow(10, e);
+  if (Math.abs(m) >= 9.995) { m /= 10; e++; }
+  return m.toFixed(d) + '×10' + String(e).split('').map(ch => SUPD[ch]).join('');
+}
+const grp = x => Math.round(x).toLocaleString('en-US');
+
+// tour timeline for the piston and the column height (deterministic, scrubbable)
+function pappAt(t) {
+  let p = PI0 * S(t, 26.8, 29.4);
+  if (t >= 30.4) p = lerp(PI0, 1.4 * PI0, S(t, 30.4, 31.6));
+  if (t >= 32) p = lerp(1.4 * PI0, PI0, S(t, 32, 32.8));
+  if (t >= 40) p = lerp(PI0, 0, S(t, 40, 41.2));
+  return p;
+}
+function hAt(t) {
+  if (t < 12) return 0;
+  if (t < 26) return H0 * Math.min(1, (1 - Math.exp(-(t - 12) / 3)) / (1 - Math.exp(-12.5 / 3)));
+  return H0 * (1 - pappAt(t - 0.6) / PI0);
+}
+
+// ------------------------------------------------------------ geometry (world = paper 1600×1000)
+const AL = 280, AR = 620, HW = 36, TOP = 230, CH_TOP = 700, CH_BOT = 772, MEM = 450, BASE = 440, PXCM = 22;
+const OUTER = [[AL - HW, TOP], [AL - HW, CH_BOT - 22], [AL - HW + 6, CH_BOT - 6], [AL - HW + 22, CH_BOT], [AR + HW - 22, CH_BOT], [AR + HW - 6, CH_BOT - 6], [AR + HW, CH_BOT - 22], [AR + HW, TOP]];
+const INNER = [[AL + HW, TOP], [AL + HW, CH_TOP], [AR - HW, CH_TOP], [AR - HW, TOP]];
+const levelsFor = h => { const px = clamp(h, -8, 10) * PXCM; return { L: BASE + px / 2, R: BASE - px / 2 }; };
+
+function liquidPath(side, lv) {
+  ctx.beginPath();
+  if (side === 'L') {
+    ctx.moveTo(AL - HW, lv.L); ctx.lineTo(AL + HW, lv.L); ctx.lineTo(AL + HW, CH_TOP); ctx.lineTo(MEM, CH_TOP); ctx.lineTo(MEM, CH_BOT);
+    ctx.lineTo(AL - HW + 22, CH_BOT); ctx.quadraticCurveTo(AL - HW, CH_BOT, AL - HW, CH_BOT - 22);
+  } else {
+    ctx.moveTo(AR - HW, lv.R); ctx.lineTo(AR + HW, lv.R); ctx.lineTo(AR + HW, CH_BOT - 22); ctx.quadraticCurveTo(AR + HW, CH_BOT, AR + HW - 22, CH_BOT);
+    ctx.lineTo(MEM, CH_BOT); ctx.lineTo(MEM, CH_TOP); ctx.lineTo(AR - HW, CH_TOP);
+  }
+  ctx.closePath();
+}
+
+// fixed proteins (all on the solution side, always submerged)
+const PROT = [[606, 500], [636, 575], [602, 650], [640, 700], [555, 738], [612, 470]];
+const BOUNCE = [{ y: 722, f: 0.9, p: 0.3 }, { y: 752, f: 0.7, p: 2.1 }];
+function field(n, x0, x1, y0, y1, seed, avoid) {
+  const arr = [];
+  for (let k = 0; arr.length < n && k < 3000; k++) {
+    const x = lerp(x0, x1, hash(seed + k * 2)), y = lerp(y0, y1, hash(seed + k * 2 + 1));
+    if (avoid && avoid(x, y)) continue;
+    if (arr.some(o => Math.hypot(o.x - x, o.y - y) < 14)) continue;
+    arr.push({ x, y, f1: .6 + hash(seed + k * 3), f2: .6 + hash(seed + k * 5), p1: hash(seed + k * 7) * 6.28, p2: hash(seed + k * 11) * 6.28 });
+  }
+  return arr;
+}
+const nearProt = (x, y) => PROT.some(([px, py]) => Math.hypot(px - x, py - y) < 26);
+const WL = field(34, AL - HW + 9, AL + HW - 9, 244, 764, 11);
+const WR = field(26, AR - HW + 9, AR + HW - 9, 244, 764, 23, nearProt);
+const WC = field(30, AL + HW + 4, AR - HW - 4, CH_TOP + 9, CH_BOT - 9, 37, (x, y) => Math.abs(x - MEM) < 15 || nearProt(x, y));
+
+let phR = 0, phL = 0, pistonA = 0;
+const vA = { membrane: 1, graph: 0, working: 0, compare: 0 };
+
+// ------------------------------------------------------------ small drawing helpers
+function water(x, y, m, a = 1, r = 5.5) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha;
+  if (m < 1) { ctx.globalAlpha = b * a * (1 - m * 0.85); ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.strokeStyle = '#4b6a86'; ctx.lineWidth = 1.1; ctx.stroke(); }
+  if (m > 0) { ctx.globalAlpha = b * a * m; sphere(x, y, r, '#9db4c8', null, { shadow: false }); }
+  ctx.globalAlpha = b;
+}
+function protein(x, y, m, r = 15, a = 1) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha;
+  if (m < 1) {
+    ctx.globalAlpha = b * a * (1 - m * 0.85);
+    sk(ellipsePts(x, y, r, r * 0.9, 16), x * 7 + y, 1, { w: 1.4, amp: 1.4, single: true, color: '#8a5a1c' });
+    ctx.font = `700 ${Math.round(r * 0.9)}px ${Studio.C.HAND}`; ctx.fillStyle = '#8a5a1c'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('P', x, y + 1);
+  }
+  if (m > 0) {
+    ctx.globalAlpha = b * a * m;
+    softEllipse(x + r * 0.3, y + r * 0.5, r * 1.2, r * 0.7, 0.18);
+    for (let i = 0; i < 6; i++) { const ang = i * 1.05 + 0.3; sphere(x + Math.cos(ang) * r * 0.7, y + Math.sin(ang) * r * 0.62, r * 0.48, '#c79a52', null, { shadow: false }); }
+    sphere(x, y, r * 0.78, '#cfa35c', 'P', { shadow: false, labelColor: '#5a3a10', labelSize: Math.round(r * 0.7) });
+  }
+  ctx.globalAlpha = b;
+}
+function note(t, t0, t1, tOut, fn) {
+  if (t < t0 || t > tOut + 0.6) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * (1 - S(t, tOut, tOut + 0.6));
+  fn(Lr(t, t0, t1)); ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ apparatus
+function drawSketchTube(lv) {
+  sk(OUTER, 11, P(0.4, 1.8), { w: 2.1 });
+  sk(INNER, 13, P(1.2, 2.3), { w: 2.1 });
+  // open rims
+  sk([[AL - HW - 8, TOP - 6], [AL - HW, TOP]], 15, P(2.2, 2.4), { w: 1.6 }); sk([[AL + HW, TOP], [AL + HW + 8, TOP - 6]], 16, P(2.2, 2.4), { w: 1.6 });
+  sk([[AR - HW - 8, TOP - 6], [AR - HW, TOP]], 17, P(2.2, 2.4), { w: 1.6 }); sk([[AR + HW, TOP], [AR + HW + 8, TOP - 6]], 18, P(2.2, 2.4), { w: 1.6 });
+  // membrane
+  sk([[MEM, CH_TOP - 12], [MEM, CH_BOT + 12]], 21, P(2.3, 2.9), { w: 2.4, dash: [7, 5], color: '#8a6a30' });
+  // liquid surfaces + solution hatching
+  const lp = P(2.9, 3.5);
+  sk([[AL - HW + 3, lv.L], [AL + HW - 3, lv.L]], 31, lp, { w: 1.5 });
+  sk([[AR - HW + 3, lv.R], [AR + HW - 3, lv.R]], 33, lp, { w: 1.5 });
+  hatch(() => liquidPath('R', lv), MEM, TOP, AR + HW, CH_BOT, 15, 41, P(3.1, 3.8), 0.26, '#8a5a1c');
+  hatch(() => liquidPath('L', lv), AL - HW, TOP, MEM, CH_BOT, 30, 43, P(3.1, 3.8), 0.12);
+}
+function drawModelTube(lv) {
+  softEllipse(MEM + 20, CH_BOT + 22, 280, 22, 0.28);
+  softEllipse(AL + 26, CH_BOT + 16, 70, 12, 0.18); softEllipse(AR + 26, CH_BOT + 16, 70, 12, 0.18);
+  // liquids
+  for (const [side, col] of [['L', 'rgba(160,188,210,0.30)'], ['R', 'rgba(206,168,104,0.32)']]) {
+    liquidPath(side, lv);
+    const g = ctx.createLinearGradient(side === 'L' ? AL - HW : MEM, 0, side === 'L' ? MEM : AR + HW, 0);
+    g.addColorStop(0, col); g.addColorStop(0.5, col.replace(/[\d.]+\)$/, '0.22)')); g.addColorStop(1, col);
+    ctx.fillStyle = g; ctx.fill();
+  }
+  // menisci
+  ctx.strokeStyle = 'rgba(80,100,115,0.55)'; ctx.lineWidth = 1.6;
+  for (const [x, y] of [[AL, lv.L], [AR, lv.R]]) { ctx.beginPath(); ctx.moveTo(x - HW + 4, y - 4); ctx.quadraticCurveTo(x, y + 5, x + HW - 4, y - 4); ctx.stroke(); }
+  // glass walls (a light band with darker edges, like a glass tube)
+  const wall = (pts, w, col) => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.lineWidth = w; ctx.strokeStyle = col; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke(); };
+  for (const pts of [OUTER, INNER]) { wall(pts, 13, 'rgba(105,125,135,0.5)'); wall(pts, 9, 'rgba(234,241,244,0.92)'); wall(pts, 2, 'rgba(255,255,255,0.8)'); }
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillRect(AL - HW + 8, TOP + 20, 4, CH_TOP - TOP - 40); ctx.fillRect(AR - HW + 8, TOP + 20, 4, CH_TOP - TOP - 40);
+  // membrane in its clamp
+  ctx.fillStyle = '#6e6a64'; ctx.fillRect(MEM - 12, CH_TOP - 16, 24, 12); ctx.fillRect(MEM - 12, CH_BOT + 4, 24, 12);
+  for (let y = CH_TOP - 4; y < CH_BOT + 4; y += 9) { ctx.fillStyle = '#cdb483'; ctx.fillRect(MEM - 3, y, 6, 6); }
+}
+function drawMolecules(st, lv, m, clk, molA) {
+  if (molA <= 0) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * molA;
+  const jx = (o, k) => o.x + 3.5 * Math.sin(o.f1 * clk * k + o.p1), jy = (o, k) => o.y + 3 * Math.sin(o.f2 * clk * k + o.p2);
+  for (const o of WL) if (o.y > lv.L + 8) water(jx(o, 1.4), jy(o, 1.4), m);
+  for (const o of WR) if (o.y > lv.R + 8) water(jx(o, 1.4), jy(o, 1.4), m);
+  for (const o of WC) water(jx(o, 1.4), jy(o, 1.4), m);
+  for (const [x, y] of PROT) protein(x + 2 * Math.sin(clk * 0.8 + x), y + 2 * Math.cos(clk * 0.7 + y), m);
+  // proteins that drift up to the membrane and bounce back
+  for (const bb of BOUNCE) {
+    const s = Math.abs(Math.sin(bb.f * clk + bb.p)), x = MEM + 20 + s * 60;
+    protein(x, bb.y, m, 14);
+    if (s < 0.06) ringFx(MEM + 5, bb.y, s / 0.06, '#b07a2e', 10);
+  }
+  // water molecules crossing the membrane (L→R and R→L)
+  for (const [ph, dir, off] of [[phR, 1, 0], [phL, -1, 500]]) {
+    const k0 = Math.floor(ph);
+    for (let k = Math.max(0, k0 - 3); k <= k0; k++) {
+      const p = (ph - k) / 2.4;
+      if (p <= 0 || p >= 1) continue;
+      const x = MEM + dir * lerp(-58, 58, S(p, 0, 1)), y = CH_TOP + 12 + hash(k * 3 + 1 + off) * (CH_BOT - CH_TOP - 24);
+      water(x, y, m, S(p, 0, 0.15) * (1 - S(p, 0.85, 1)));
+    }
+  }
+  ctx.globalAlpha = b;
+}
+function drawPiston(lv, papp, a, m) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const py = lv.R - 13, x0 = AR - HW + 5, w = 2 * HW - 10;
+  if (m < 1) {
+    const sa = ctx.globalAlpha; ctx.globalAlpha = sa * (1 - m * 0.8);
+    sk([[x0, py], [x0 + w, py], [x0 + w, py + 12], [x0, py + 12], [x0, py]], 601, 1, { w: 1.6 });
+    sk([[AR - 5, py], [AR - 5, 150], [AR + 5, 150], [AR + 5, py]], 603, 1, { w: 1.4 });
+    ctx.globalAlpha = sa;
+  }
+  if (m > 0) {
+    const sa = ctx.globalAlpha; ctx.globalAlpha = sa * m;
+    const g = ctx.createLinearGradient(x0, 0, x0 + w, 0); g.addColorStop(0, '#7b7771'); g.addColorStop(0.4, '#c9c4bb'); g.addColorStop(1, '#6f6b65');
+    ctx.fillStyle = g; ctx.fillRect(x0, py, w, 12);
+    ctx.fillStyle = '#3d3a36'; ctx.fillRect(x0, py + 10, w, 3);
+    const g2 = ctx.createLinearGradient(AR - 6, 0, AR + 6, 0); g2.addColorStop(0, '#8b867e'); g2.addColorStop(0.5, '#dcd7cd'); g2.addColorStop(1, '#7a756e');
+    ctx.fillStyle = g2; ctx.fillRect(AR - 6, 146, 12, py - 146);
+    ctx.fillStyle = '#5a4a3c'; ctx.beginPath(); ctx.roundRect(AR - 34, 136, 68, 14, 5); ctx.fill();
+    ctx.globalAlpha = sa;
+  }
+  if (papp > 1e-6) {
+    arrowSk(AR, 88, AR, 128, 611, 1, ORANGE, 0);
+    tag(AR + 150, 112, `P = ${(papp * 1000).toFixed(2)} mbar`, { color: '#8a4d1c' });
+  }
+  ctx.globalAlpha = b;
+}
+function drawHeight(lv, h, a) {
+  if (a <= 0.01 || Math.abs(h) < 0.2) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const bx = 700, top = Math.min(lv.L, lv.R), bot = Math.max(lv.L, lv.R);
+  sk([[AL + HW + 4, lv.L], [bx + 8, lv.L]], 701, 1, { w: 1, color: GRAY, dash: [5, 6], single: true });
+  sk([[AR + HW + 4, lv.R], [bx + 8, lv.R]], 703, 1, { w: 1, color: GRAY, dash: [5, 6], single: true });
+  sk([[bx, top], [bx, bot]], 705, 1, { w: 2, color: ORANGE });
+  sk([[bx - 7, top + 10], [bx, top], [bx + 7, top + 10]], 707, 1, { w: 2, color: ORANGE, single: true });
+  sk([[bx - 7, bot - 10], [bx, bot], [bx + 7, bot - 10]], 709, 1, { w: 2, color: ORANGE, single: true });
+  hand(`h = ${Math.abs(h).toFixed(2)} cm`, bx + 14, (top + bot) / 2 + 9, { size: 30, color: ORANGE });
+  if (h < 0) hand('(solution side lower)', bx + 14, (top + bot) / 2 + 36, { size: 21, color: GRAY });
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ notebook views (right side)
+function drawMembraneView(a, clk, m, tally) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const cx = 1285, cy = 495, r = 212;
+  hand('zoom on the membrane', 1070, 205, { size: 40 });
+  ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
+  ctx.fillStyle = 'rgba(160,188,210,0.16)'; ctx.fillRect(cx - r, cy - r, r, 2 * r);
+  ctx.fillStyle = 'rgba(206,168,104,0.2)'; ctx.fillRect(cx, cy - r, r, 2 * r);
+  const pores = [];
+  for (let y = cy - r; y < cy + r; y += 46) { ctx.fillStyle = '#cdb483'; ctx.fillRect(cx - 7, y, 14, 32); ctx.fillStyle = 'rgba(90,60,20,0.25)'; ctx.fillRect(cx + 5, y, 2, 32); pores.push(y + 32 + 7); }
+  // wandering water on both sides
+  for (let i = 0; i < 16; i++) {
+    const side = i < 8 ? -1 : 1, x = cx + side * (40 + hash(i * 5 + 1) * 150) + 8 * Math.sin(clk * (0.8 + hash(i)) + i);
+    const y = cy - 170 + hash(i * 7 + 3) * 340 + 8 * Math.cos(clk * (0.7 + hash(i + 9)) + i);
+    water(x, y, m, 1, 9);
+  }
+  // proteins bump into the membrane and bounce back
+  for (let i = 0; i < 3; i++) {
+    const s = Math.abs(Math.sin(clk * (0.6 + i * 0.17) + i * 1.7)), y = cy - 125 + i * 125;
+    protein(cx + 36 + s * 110, y + 6 * Math.sin(clk + i), m, 28);
+  }
+  // water squeezing through the pores
+  for (const [ph, dir, off] of [[phR, 1, 0], [phL, -1, 500]]) {
+    const k0 = Math.floor(ph);
+    for (let k = Math.max(0, k0 - 3); k <= k0; k++) {
+      const p = (ph - k) / 2.4; if (p <= 0 || p >= 1) continue;
+      const y = pores[Math.floor(hash(k * 3 + 1 + off) * (pores.length - 1))];
+      water(cx + dir * lerp(-110, 110, S(p, 0, 1)), y, m, S(p, 0, 0.12) * (1 - S(p, 0.88, 1)), 9);
+    }
+  }
+  ctx.restore();
+  sk(ellipsePts(cx, cy, r, r, 40), 811, 1, { w: 2 });
+  hand('pure water', cx - 105, cy - r - 12, { size: 24, color: GRAY, align: 'center' });
+  hand('solution', cx + 105, cy - r - 12, { size: 24, color: GRAY, align: 'center' });
+  hand('pores let water through — protein is too big', cx, cy + r + 38, { size: 24, color: ORANGE, align: 'center' });
+  hand(`into solution → ${tally[0]}      ${tally[1]} ← back to water`, cx, cy + r + 74, { size: 26, align: 'center' });
+  ctx.globalAlpha = b;
+}
+function drawGraph(a, st, q) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('π vs concentration', 1070, 205, { size: 40 });
+  const cU = q.C * 1e4, xmax = Math.max(4, Math.ceil(cU * 1.25));
+  const slope = R_ * st.T * 1e-4 * 1e3;          // mbar per (10⁻⁴ mol L⁻¹)
+  const ymax = Math.max(5, Math.ceil(slope * xmax * 1.1));
+  const ystep = ymax > 20 ? 10 : ymax > 10 ? 5 : 2, xstep = xmax > 10 ? 5 : 1, xt = [], yt = [];
+  for (let v = 0; v <= xmax; v += xstep) xt.push(v);
+  for (let v = 0; v <= ymax; v += ystep) yt.push(v);
+  const { X, Y } = sketchAxes({ x0: 1110, y0: 270, x1: 1500, y1: 740 }, { xmin: 0, xmax, ymin: 0, ymax },
+    { xlabel: 'C (×10⁻⁴ mol L⁻¹)', ylabel: 'π (mbar)', xticks: xt, yticks: yt, seed: 821 });
+  if (st.T !== 300) { sk([[X(0), Y(0)], [X(xmax), Y(Math.min(ymax, R_ * 300 * 1e-1 * xmax))]], 823, 1, { w: 1, color: GRAY, dash: [6, 7], single: true }); }
+  const xe = Math.min(xmax, ymax / slope);
+  sk([[X(0), Y(0)], [X(xe), Y(slope * xe)]], 825, 1, { w: 2.2 });
+  hand(`π = C × RT   (T = ${st.T} K)`, 1135, 305, { size: 24, color: GRAY });
+  const px = X(Math.min(cU, xmax)), py = Y(Math.min(q.pi * 1e3, ymax));
+  sk([[px, py], [px, 740]], 827, 1, { w: 1, color: ORANGE, dash: [4, 6], single: true });
+  ctx.fillStyle = ORANGE; ctx.beginPath(); ctx.arc(px, py, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#f3f0e8'; ctx.lineWidth = 3; ctx.stroke();
+  const right = px < 1380;
+  hand(`${(q.pi * 1000).toFixed(2)} mbar`, px + (right ? 16 : -16), py - 12, { size: 30, color: ORANGE, align: right ? 'left' : 'right' });
+  hand('twice the particles → twice the π', 1110, 830, { size: 24, color: GRAY });
+  ctx.globalAlpha = b;
+}
+function drawWorking(a, st, q, isTour) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  const X = 1070, sz = 32;
+  if (isTour) {
+    hand('π = CRT = (n / V) RT', X, 215, { size: sz, prog: P(33.9, 34.6) });
+    hand('n = πV / RT', X, 270, { size: sz, prog: P(34.6, 35.2) });
+    hand('   = (2.57×10⁻³ × 0.200) / (0.083 × 300)', X, 315, { size: sz, prog: P(35.2, 36.2) });
+    hand('   = 2.06×10⁻⁵ mol', X, 360, { size: sz, prog: P(36.2, 36.8) });
+    hand('M = w / n = 1.26 g / 2.06×10⁻⁵ mol', X, 425, { size: sz, prog: P(36.9, 37.9) });
+    const fin = P(38.2, 38.9);
+    if (fin > 0) {
+      const w = hand('M ≈ 61,039 g mol⁻¹', X + 20, 515, { size: 48, color: ORANGE, prog: fin, weight: 700 });
+      const cp = P(38.8, 39.4);
+      if (cp > 0) sk(ellipsePts(X + 20 + w / 2, 500, w / 2 + 26, 38, 30, -2.2, -2.2 + Math.PI * 2.15), 871, cp, { w: 2.2, color: ORANGE });
+    }
+    hand('≈ 6.1 × 10⁴ g mol⁻¹   (NCERT rounds to 61,022)', X, 600, { size: 24, color: GRAY, prog: P(39.2, 39.8) });
+    hand('one line: M = wRT / πV', X, 650, { size: 26, color: GRAY, prog: P(39.4, 40) });
+  } else {
+    const hNow = q.h0;
+    hand(`n = w / M = ${st.w.toFixed(2)} / ${grp(st.M)}`, X, 215, { size: sz });
+    hand(`   = ${sciF(q.n)} mol`, X, 258, { size: sz });
+    hand(`C = n / V = ${sciF(q.n)} / ${(st.V / 1000).toFixed(3)} L`, X, 318, { size: sz });
+    hand(`   = ${sciF(q.C)} mol L⁻¹`, X, 361, { size: sz });
+    hand(`π = CRT = ${sciF(q.C)} × 0.083 × ${st.T}`, X, 421, { size: sz });
+    const w = hand(`π = ${sciF(q.pi)} bar`, X + 20, 505, { size: 46, color: ORANGE, weight: 700 });
+    sk(ellipsePts(X + 20 + w / 2, 490, w / 2 + 24, 36, 30, -2.2, -2.2 + Math.PI * 2.15), 873, 1, { w: 2.2, color: ORANGE });
+    hand(`as a water column: h = π / ρg ≈ ${hNow.toFixed(2)} cm`, X, 590, { size: 26, color: GRAY });
+    hand(`check: M = wRT / πV = ${grp(st.w * R_ * st.T / (q.pi * st.V / 1000))} g mol⁻¹`, X, 635, { size: 26, color: GRAY });
+  }
+  ctx.globalAlpha = b;
+}
+function drawCompare(a, st, q, prog) {
+  if (a <= 0.01) return;
+  const b = ctx.globalAlpha; ctx.globalAlpha = b * a;
+  hand('why osmosis for proteins?', 1070, 205, { size: 40, prog: prog(40.4, 41.2) });
+  // thermometer
+  const tp = prog(41.0, 42.0), tx = 1100;
+  sk([[tx - 10, 290], [tx - 10, 610], [tx + 10, 610], [tx + 10, 290], [tx - 10, 290]], 901, tp, { w: 1.7 });
+  sk(ellipsePts(tx, 632, 22, 22, 22), 903, tp, { w: 1.7 });
+  if (tp >= 1) {
+    ctx.fillStyle = 'rgba(168,67,58,0.55)'; ctx.beginPath(); ctx.arc(tx, 632, 15, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(tx - 4, 470, 8, 150);
+    for (let y = 300; y < 600; y += 20) sk([[tx + 10, y], [tx + 18, y]], 905 + y, 1, { w: 1, single: true });
+  }
+  const dTb = 0.52 * q.n / (st.V / 1000);           // molality ≈ molarity for a dilute aqueous solution
+  const lp = prog(41.6, 43.0);
+  hand('boiling point rise', 1140, 320, { size: 28, prog: lp });
+  hand('ΔTb = Kb × m', 1140, 360, { size: 26, color: GRAY, prog: lp });
+  hand(`= 0.52 × ${sciF(q.C, 2)}`, 1140, 396, { size: 26, color: GRAY, prog: lp });
+  hand(`≈ ${dTb < 0.001 ? dTb.toFixed(6) : dTb.toFixed(4)} K`, 1140, 440, { size: 34, prog: lp });
+  hand('✗ far too small to measure', 1140, 480, { size: 24, color: '#a8433a', prog: prog(42.6, 43.4) });
+  // ruler with the osmotic column
+  const rp = prog(43.2, 44.2), rx = 1440, r0 = 640, pxcm = 60;
+  sk([[rx - 16, r0 - 330], [rx + 16, r0 - 330], [rx + 16, r0], [rx - 16, r0], [rx - 16, r0 - 330]], 921, rp, { w: 1.7 });
+  if (rp >= 1) {
+    for (let c = 0; c <= 5; c++) { sk([[rx - 16, r0 - c * pxcm], [rx - 4, r0 - c * pxcm]], 923 + c, 1, { w: 1.2, single: true }); hand(String(c), rx - 26, r0 - c * pxcm + 7, { size: 20, color: GRAY, align: 'right' }); }
+    const hh = clamp(q.h0, 0, 5.4) * pxcm;
+    ctx.fillStyle = 'rgba(206,168,104,0.55)'; ctx.fillRect(rx - 2, r0 - hh, 16, hh);
+    sk([[rx - 20, r0 - hh], [rx + 20, r0 - hh]], 931, 1, { w: 2, color: ORANGE });
+  }
+  const op = prog(44.0, 45.2);
+  hand('osmotic rise', 1330, 720, { size: 28, prog: op, align: 'center' });
+  hand(`h ≈ ${q.h0.toFixed(1)} cm`, 1330, 758, { size: 34, prog: op, align: 'center' });
+  hand('✓ easy to read with a ruler', 1330, 796, { size: 24, color: '#4f8a63', prog: prog(44.8, 45.6), align: 'center' });
+  hand('and it works at room temperature, so the protein is not damaged', 1070, 870, { size: 22, color: GRAY, prog: prog(45.2, 46.2) });
+  ctx.globalAlpha = b;
+}
+
+// ------------------------------------------------------------ tour annotations
+function drawTourNotes(t, lv) {
+  note(t, 4.9, 5.4, 10.5, p => { hand('pure water', 150, 330, { size: 32, color: ORANGE, align: 'center', prog: p }); arrowSk(165, 342, 236, 400, 1101, p); });
+  note(t, 5.1, 5.6, 10.5, p => { hand('protein solution', 790, 330, { size: 32, color: ORANGE, align: 'center', prog: p }); arrowSk(740, 342, 664, 400, 1103, p); });
+  note(t, 5.3, 5.9, 10.5, p => { hand('semipermeable membrane', MEM, 870, { size: 30, color: ORANGE, align: 'center', prog: p }); arrowSk(MEM, 842, MEM, 790, 1105, p); });
+  note(t, 12.3, 13.2, 18.4, p => hand('water squeezes through both ways', MEM, 520, { size: 30, color: ORANGE, align: 'center', prog: p }));
+  note(t, 14.2, 15.0, 18.4, p => { hand('protein: too big to pass', 580, 835, { size: 26, color: ORANGE, align: 'center', prog: p }); arrowSk(545, 812, 498, 772, 1107, p); });
+  note(t, 15.6, 16.2, 18.4, p => hand(`into solution → ${Math.floor(2.1 * (t - 11))}      ${Math.floor(1.3 * (t - 11))} ← back`, MEM, 572, { size: 28, align: 'center', prog: p }));
+  note(t, 17.0, 17.6, 18.4, p => hand('more water goes IN than comes back', MEM, 614, { size: 26, color: GRAY, align: 'center', prog: p }));
+  note(t, 20.0, 20.8, 25.6, p => hand('the solution side rises…', 720, 270, { size: 28, color: ORANGE, prog: p }));
+  note(t, 21.4, 22.2, 25.6, p => hand('…its extra weight pushes water back', 720, 308, { size: 26, color: GRAY, prog: p }));
+  note(t, 23.0, 23.8, 25.6, p => hand('flow stops when push-back = osmotic pressure', 720, 346, { size: 26, color: ORANGE, prog: p }));
+  note(t, 27.0, 27.8, 32.6, p => hand('press with a piston instead', 720, 205, { size: 28, color: ORANGE, prog: p }));
+  note(t, 29.4, 30.2, 32.6, p => hand('just enough to stop the flow  =  π', 720, 246, { size: 28, color: ORANGE, prog: p }));
+  note(t, 29.8, 30.4, 32.6, p => { hand('π = C R T', 740, 340, { size: 50, weight: 700, prog: p }); hand('C = n / V   (mol L⁻¹)', 742, 388, { size: 28, color: GRAY, prog: p }); });
+  note(t, 30.8, 31.6, 32.6, p => hand('push harder → water is forced OUT: reverse osmosis', 720, 560, { size: 26, color: '#a8433a', prog: p }));
+  note(t, 46.9, 47.8, 60, p => { hand('your turn', 1380, 940, { size: 54, color: ORANGE, prog: p, weight: 700, align: 'center' }); arrowSk(1470, 925, 1580, 900, 1109, p); });
+}
+
+// ------------------------------------------------------------ lesson config
+Studio.lesson({
+  id: 'osmosis',
+  unit: 'Unit 1 · Solutions',
+  title: 'Osmotic Pressure',
+  headline: 'Osmotic pressure · π = CRT',
+  panelEyebrow: 'Osmosis lab',
+  intro: 'A pencil sketch of a U-tube osmometer, brought to life. Watch water squeeze through a membrane, see where osmotic pressure comes from, then use it to weigh a protein.',
+  welcome: { title: 'How do you weigh a protein molecule?', text: 'Press Play the tour for a 50-second guided story, or jump straight into the lab.', formula: 'π = C R T  →  M = wRT / πV' },
+  problem: {
+    html: '200 cm³ of an aqueous solution of a protein contains <b>1.26 g</b> of the protein. Its osmotic pressure at <b>300 K</b> is <b>2.57 × 10⁻³ bar</b>. Calculate the molar mass of the protein.<span class="cell">R = 0.083 L bar mol⁻¹ K⁻¹</span>',
+    answer: 'M = wRT/πV = (1.26 × 0.083 × 300)/(2.57×10⁻³ × 0.200) ≈ 6.10 × 10⁴ g mol⁻¹ (61,039; NCERT prints 61,022)', revealAt: 38.9, revealChapter: 'SOLVE',
+  },
+  tourEnd: 50,
+  introT: 6,
+  chapters: [
+    { t: 0, key: 'SKETCH', title: 'A U-tube osmometer', text: 'A U-shaped tube divided at the bottom by a semipermeable membrane. The left arm holds pure water and the right arm holds the protein solution. Both start at the same level.', formula: 'semipermeable: lets solvent through, not solute' },
+    { t: 6, key: 'BUILD', title: 'Brought to life', text: 'The membrane has pores that small water molecules can pass through, but they are far too small for huge protein molecules.', formula: 'H₂O ≈ 18 g mol⁻¹   vs   protein ≈ 61,000 g mol⁻¹' },
+    { t: 11, key: 'CROSSING', title: 'Water crosses both ways', text: 'Water molecules hit the membrane from both sides. The solution side has slightly less water per litre (protein takes up room), so fewer water molecules cross back. More water goes in than comes out, giving a net flow into the solution.', formula: 'net flow of solvent: pure water → solution' },
+    { t: 19, key: 'RISE', title: 'The column rises, then stops', text: 'Water collects on the solution side and its level climbs. The extra height of liquid pushes back. When that push equals the osmotic pressure, flow in both directions balances and the level stops at h ≈ 2.6 cm.', formula: 'π = h ρ g   (2.57×10⁻³ bar ≈ 2.6 cm of water)' },
+    { t: 26, key: 'PRESSURE', title: 'Osmotic pressure', text: 'Instead of letting the column rise, press on the solution with a piston. The pressure that just stops the flow is the osmotic pressure π. Press harder and water is pushed backwards out of the solution: reverse osmosis, used to purify sea water.', formula: 'π = C R T ,   C = n / V' },
+    { t: 33, key: 'SOLVE', title: 'Now the class problem', text: 'π = 2.57×10⁻³ bar, V = 0.200 L, T = 300 K. First find the moles of protein, n = πV/RT = 2.06×10⁻⁵ mol. Then M = w/n = 1.26 g ÷ 2.06×10⁻⁵ mol ≈ 61,000 g mol⁻¹.', formula: 'M = wRT / πV ≈ 6.1 × 10⁴ g mol⁻¹' },
+    { t: 40, key: 'WHY π', title: 'Why osmosis for proteins?', text: 'The same solution would raise the boiling point by only about 0.00005 K, which is far too small to measure. Osmotic pressure gives a 2.6 cm column you can read with a ruler, at room temperature, without damaging the protein.', formula: 'ΔTb ≈ 5 × 10⁻⁵ K   vs   h ≈ 2.6 cm' },
+    { t: 46.5, key: 'YOUR TURN', title: 'Your turn', text: 'Change the protein mass, the volume, the temperature or the molar mass, push the piston, and try to complete all four challenges.', formula: '' },
+  ],
+  camera: [[0, 800, 500, 1], [6, 800, 500, 1], [8.5, 480, 520, 1.25], [11, 480, 520, 1.25], [12.8, 450, 680, 2.2], [18.2, 450, 680, 2.2],
+    [19.6, 800, 500, 1], [25.6, 800, 500, 1], [26.8, 560, 430, 1.3], [32.6, 560, 430, 1.3], [34, 1270, 470, 1.45], [39.8, 1270, 470, 1.45],
+    [41, 800, 500, 1], [99, 800, 500, 1]],
+  tourState(t) {
+    return {
+      ...PROB, m: S(t, 6.5, 9.5), h: hAt(t), papp: pappAt(t), dh: (hAt(t + 0.05) - hAt(t - 0.05)) / 0.1,
+      views: {
+        membrane: S(t, 19, 19.8) * (1 - S(t, 25.8, 26.4)) + S(t, 46.6, 47.4), graph: 0,
+        working: S(t, 33.2, 34) * (1 - S(t, 39.8, 40.3)), compare: S(t, 40.3, 41) * (1 - S(t, 46.3, 46.9)),
+      },
+    };
+  },
+  initLab: () => ({ ...PROB, pf: 0, h: 0, dh: 0, m: 1, view: 'membrane', slow: false }),
+  onEnterTour() { phR = phL = 0; },
+  onEnterLab() { phR = phL = 0; },
+  onReset() { phR = phL = 0; },
+  step(lab, dt) {
+    const q = derive(lab), tau = 2.2;
+    const hEq = clamp(q.pi * (1 - lab.pf) * CM_PER_BAR, -8, 12);
+    lab.dh = (hEq - lab.h) / tau;
+    lab.h += (hEq - lab.h) * (1 - Math.exp(-dt / tau));
+  },
+  draw(env) {
+    ctx = env.ctx; TT = env.TT; P = env.P;
+    const lab = env.mode === 'lab' ? env.lab : null, st = env.st, q = derive(st);
+    const m = lab ? lab.m : st.m, h = lab ? lab.h : st.h, dh = lab ? lab.dh : st.dh;
+    const papp = lab ? lab.pf * q.pi : st.papp;
+    if (lab) for (const v in vA) vA[v] = env.snap ? (v === lab.view ? 1 : 0) : lerp(vA[v], v === lab.view ? 1 : 0, 1 - Math.exp(-env.rawDt * 7));
+    const views = lab ? vA : st.views;
+    const lv = levelsFor(h);
+
+    // crossing rates follow the net flow (dh/dt): more L→R while the column rises, more R→L in reverse osmosis
+    const act = lab ? 1 : S(TT, 8.5, 10);
+    phR += (1.3 + Math.max(0, 2.6 * dh)) * env.dt * act;
+    phL += (1.3 + Math.max(0, -2.6 * dh)) * env.dt * act;
+    const pistonWant = lab ? (lab.pf > 0.004 ? 1 : 0) : S(TT, 26.5, 27.2) * (1 - S(TT, 41.2, 41.8));
+    pistonA = lab ? (env.snap ? pistonWant : lerp(pistonA, pistonWant, 1 - Math.exp(-env.rawDt * 6))) : pistonWant;
+
+    hand('Osmosis', 60, 100, { size: 50, prog: P(3.8, 4.6), weight: 700 });
+    hand('U-tube · semipermeable membrane', 62, 140, { size: 28, color: GRAY, prog: P(4.3, 5.2) });
+
+    ctx.globalAlpha = 1 - 0.82 * m; drawSketchTube(lv); ctx.globalAlpha = 1;
+    const tip = Studio.pencilTip;
+    if (m > 0) { ctx.globalAlpha = m; drawModelTube(lv); ctx.globalAlpha = 1; }
+    drawMolecules(st, lv, m, env.clock, P(4.6, 5.4));
+    drawPiston(lv, papp, pistonA, m);
+    drawHeight(lv, h, lab ? 1 : S(TT, 19.6, 20.4));
+    const tagA = lab ? 1 : S(TT, 8.5, 9.5) * (1 - S(TT, 11.6, 12.3)) + S(TT, 18.4, 19.2);
+    tag(AL, 815, 'pure water', { alpha: tagA, color: '#4b6a86' });
+    tag(AR, 815, `protein ${st.w.toFixed(2)} g / ${st.V} mL`, { alpha: tagA, color: '#8a5a1c' });
+
+    const tally = lab || TT >= 19 ? [Math.floor(phR), Math.floor(phL)] : [0, 0];
+    drawMembraneView(views.membrane, env.clock, m, tally);
+    drawGraph(views.graph, st, q);
+    drawWorking(views.working, st, q, !lab);
+    drawCompare(views.compare, st, q, lab ? () => 1 : P);
+
+    if (env.mode === 'tour') drawTourNotes(TT, lv);
+    if (lab) {
+      let msg, col = ORANGE;
+      if (lab.pf > 1.02 && lab.h < -0.05) { msg = 'reverse osmosis: water is squeezed out of the solution'; col = '#a8433a'; }
+      else if (Math.abs(lab.pf - 1) < 0.02 && Math.abs(lab.h) < 0.12) msg = 'balanced: piston pressure = osmotic pressure';
+      else if (lab.dh > 0.03) msg = 'net flow of water into the solution →';
+      else if (lab.dh < -0.03) msg = '← net flow of water back out';
+      else msg = `equilibrium: the column holds at h = ${Math.abs(lab.h).toFixed(2)} cm`;
+      hand(msg, MEM, 905, { size: 26, color: col, align: 'center' });
+    }
+    Studio.pencilTip = tip || Studio.pencilTip;
+  },
+  stats: [{ id: 'pi', label: 'π' }, { id: 'C', label: 'CONC.' }, { id: 'h', label: 'COLUMN h' }, { id: 'M', label: 'MOLAR MASS' }],
+  statValues(st, mode, lab) {
+    const q = derive(st), h = mode === 'lab' ? lab.h : (st.h ?? 0);
+    return { pi: `${(q.pi * 1000).toFixed(2)}<small>mbar</small>`, C: `${(q.C * 1e6).toFixed(0)}<small>µM</small>`, h: `${h.toFixed(2)}<small>cm</small>`, M: `${(st.M / 1000).toFixed(1)}k<small>g/mol</small>` };
+  },
+  now(st, lab) {
+    const q = derive(st);
+    let title, text;
+    if (lab.pf > 1.02) { title = 'Reverse osmosis'; text = `The piston pushes with ${(lab.pf * q.pi * 1000).toFixed(2)} mbar, more than the osmotic pressure (${(q.pi * 1000).toFixed(2)} mbar). Water is forced backwards through the membrane, out of the solution. Desalination plants use exactly this to make drinking water from sea water.`; }
+    else if (Math.abs(lab.pf - 1) < 0.02) { title = 'Balanced by the piston'; text = 'The piston pressure equals π, so water crosses equally in both directions and the levels stay level. This is the definition of osmotic pressure: the pressure needed to stop osmosis.'; }
+    else if (Math.abs(lab.dh) > 0.03) { title = 'Water is flowing'; text = lab.dh > 0 ? 'More water molecules cross into the solution than come back, so the solution column is rising. It will stop when the extra height pushes back as hard as π.' : 'The column is too high for the current π, so water flows back out until the levels match the new equilibrium.'; }
+    else { title = 'Equilibrium'; text = `The column is steady at h = ${Math.abs(lab.h).toFixed(2)} cm. Its hydrostatic push (hρg) balances what is left of the osmotic pressure. More particles per litre (more mass, smaller volume, lighter molecules) or a higher temperature → bigger π → taller column.`; }
+    return { title, text, formula: `π = (${st.w.toFixed(2)} / ${grp(st.M)}) / ${(st.V / 1000).toFixed(3)} × 0.083 × ${st.T} = ${sciF(q.pi)} bar` };
+  },
+  controls: [
+    { type: 'slider', label: 'Protein mass', min: 0.2, max: 5, step: 0.01, ends: ['LESS', 'MORE'], get: l => l.w, set: (l, v) => { l.w = v; }, show: l => l.w.toFixed(2) + ' g' },
+    { type: 'slider', label: 'Solution volume', min: 50, max: 500, step: 5, ends: ['50 mL', '500 mL'], get: l => l.V, set: (l, v) => { l.V = v; }, show: l => l.V + ' mL' },
+    { type: 'slider', label: 'Temperature', min: 273, max: 373, step: 1, ends: ['COLD', 'HOT'], get: l => l.T, set: (l, v) => { l.T = v; }, show: l => l.T + ' K' },
+    { type: 'slider', label: 'Protein molar mass', min: 3.5, max: 6, step: 0.005, ends: ['SMALL', 'HUGE'], get: l => Math.log10(l.M), set: (l, v) => { l.M = Math.pow(10, v); }, show: l => grp(l.M) + ' g/mol' },
+    { type: 'slider', label: 'Piston pressure', min: 0, max: 2, step: 0.01, ends: ['NONE', '2 × π'], get: l => l.pf, set: (l, v) => { l.pf = v; },
+      show: l => `${(l.pf * derive(l).pi * 1000).toFixed(2)} mbar · ${l.pf.toFixed(2)} π` },
+    { type: 'chips', items: [{ key: 'slow', label: 'Slow motion' }] },
+    { type: 'slider', label: 'Sketch — Model', min: 0, max: 1, ends: ['SKETCH', 'MODEL'], get: l => l.m, set: (l, v) => { l.m = v; } },
+    { type: 'segment', key: 'view', label: 'Notebook view', options: [['membrane', 'Membrane'], ['graph', 'Graph'], ['working', 'Working'], ['compare', 'Why π']] },
+  ],
+  challenges: [
+    { id: 'tall', text: 'Make the column rise above 5 cm', hint: 'π depends on particles per litre and on T.', test: l => l.h > 5 },
+    { id: 'stop', text: 'Stop the flow exactly with the piston', hint: 'Set the piston pressure equal to π and wait for the levels to match.', test: l => Math.abs(l.pf - 1) < 0.02 && Math.abs(l.h) < 0.1 },
+    { id: 'ro', text: 'Start reverse osmosis', hint: 'Push harder than π.', test: l => l.pf > 1.05 && l.h < -0.2 },
+    { id: 'five', text: 'Find the protein mass that gives π = 5.00 × 10⁻³ bar', hint: 'Keep V = 200 mL, T = 300 K and M = 61,039 g/mol.', test: l => { const q = derive(l); return Math.abs(q.pi - 5e-3) < 5e-5 && l.V === 200 && l.T === 300 && Math.abs(l.M - 61039) < 600; } },
+  ],
+  quiz: {
+    question: 'Keep the same <b>1.26 g in 200 mL</b>, but use a protein that is <b>twice as heavy</b> (M ≈ 122,000 g/mol). The osmotic pressure…',
+    options: ['doubles', 'halves', 'stays the same'], correct: 1,
+    right: '✓ Right. The same mass of heavier molecules means half as many molecules (n = w/M). π only counts solute particles per litre, π = (n/V)RT, so it halves. <b>Test it:</b> drag the molar mass to about 122,000.',
+    wrong: '✗ Not quite. Osmotic pressure is colligative: it counts particles, not their mass. Twice the molar mass → half the moles → half the π.',
+  },
+});
+})();
+</script>
+</body>
+</html>
